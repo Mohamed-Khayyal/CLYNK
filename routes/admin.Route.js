@@ -2,10 +2,11 @@ const express = require("express");
 const adminController = require("../controllers/admin.Controller");
 const auditController = require("../controllers/audit.Controller");
 const auth = require("../middlewares/auth");
+const { adminLimiter } = require("../middlewares/rateLimiters");
 
 const router = express.Router();
 
-router.use(auth.protect, auth.restrictTo("admin"));
+router.use(auth.protect, auth.restrictTo("admin"), adminLimiter);
 
 router.post("/create-admin", adminController.createAdmin);
 

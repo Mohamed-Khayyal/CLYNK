@@ -20,7 +20,10 @@ const notificationRoute = require("./routes/notification.Route");
 const ratingRoute = require("./routes/rating.Route");
 const prescriptionRoute = require("./routes/prescription.Route");
 
-const { globalLimiter } = require("./middlewares/rateLimiters");
+const {
+  globalLimiter,
+  authenticatedWriteLimiter,
+} = require("./middlewares/rateLimiters");
 
 process.on("uncaughtException", (err) => {
   console.log("UNCAUGHT EXCEPTION! Shutting down...");
@@ -32,11 +35,12 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(corsHandler);
+app.use(cookieParser());
 app.use(globalLimiter);
+app.use(authenticatedWriteLimiter);
 
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
-app.use(cookieParser());
 app.use(auditLogger);
 
 connectDB();
