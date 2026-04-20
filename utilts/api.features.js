@@ -26,12 +26,12 @@ class APIFeatures {
           const sqlOp = this._mapOperator(operator);
           if (!sqlOp) continue;
 
-          this.where.push(`\`${key}\` ${sqlOp} ?`);
-          this.values.push(filters[key][operator]);
+          this.where.push(
+            `[${key}] ${sqlOp} ${this._addValue(filters[key][operator])}`,
+          );
         }
       } else {
-        this.where.push(`\`${key}\` = ?`);
-        this.values.push(filters[key]);
+        this.where.push(`[${key}] = ${this._addValue(filters[key])}`);
       }
     }
 
@@ -48,7 +48,7 @@ class APIFeatures {
           const field = f.replace("-", "");
 
           if (!this.allowedFields.includes(field)) return null;
-          return `\`${field}\` ${order}`;
+          return `[${field}] ${order}`;
         })
         .filter(Boolean);
 
@@ -66,7 +66,7 @@ class APIFeatures {
         .filter((f) => this.allowedFields.includes(f));
 
       if (safeFields.length) {
-        this.fields = safeFields.map((f) => `\`${f}\``).join(", ");
+        this.fields = safeFields.map((f) => `[${f}]`).join(", ");
       }
     }
     return this;
@@ -83,16 +83,17 @@ class APIFeatures {
   }
 
   build(table) {
-    let sql = `SELECT ${this.fields} FROM \`${table}\``;
+    let sql = `SELECT ${this.fields} FROM [${table}]`;
 
     if (this.where.length) {
       sql += ` WHERE ${this.where.join(" AND ")}`;
     }
 
-    sql += ` ORDER BY ${this.sortBy}`;
-    sql += ` LIMIT ? OFFSET ?`;
+    const offsetParam = this._addValue(this.offsetValue);
+    const limitParam = this._addValue(this.limitValue);
 
-    this.values.push(this.limitValue, this.offsetValue);
+    sql += ` ORDER BY ${this.sortBy}`;
+    sql += ` OFFSET ${offsetParam} ROWS FETCH NEXT ${limitParam} ROWS ONLY`;
 
     return { sql, values: this.values };
   }
@@ -105,6 +106,12 @@ class APIFeatures {
       lt: "<",
     };
     return map[op];
+  }
+
+  _addValue(value) {
+    const paramName = `p${this.values.length}`;
+    this.values.push({ name: paramName, value });
+    return `@${paramName}`;
   }
 }
 

@@ -246,8 +246,11 @@ CREATE TABLE dbo.Notifications (
 );
 GO
 
-ALTER TABLE dbo.Patients
-DROP COLUMN blood_type;
+IF COL_LENGTH('dbo.Patients', 'blood_type') IS NOT NULL
+BEGIN
+    ALTER TABLE dbo.Patients
+    DROP COLUMN blood_type;
+END
 GO
 
 ALTER TABLE dbo.Clinics

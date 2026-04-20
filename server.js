@@ -15,7 +15,7 @@ const clinicRoute = require("./routes/clinic.Routes");
 const staffRoute = require("./routes/staff.Route");
 const doctorRoute = require("./routes/doctor.Route");
 const adminRoute = require("./routes/admin.Route");
-const bokkingRoute = require("./routes/booking.Route");
+const bookingRoute = require("./routes/booking.Route");
 const notificationRoute = require("./routes/notification.Route");
 const ratingRoute = require("./routes/rating.Route");
 const prescriptionRoute = require("./routes/prescription.Route");
@@ -43,14 +43,12 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(auditLogger);
 
-connectDB();
-
 app.use("/api/auth", authRoute);
 app.use("/api/user", userRoute);
 app.use("/api/clinic", clinicRoute);
 app.use("/api/staff", staffRoute);
 app.use("/api/doctors", doctorRoute);
-app.use("/api/book", bokkingRoute);
+app.use("/api/book", bookingRoute);
 app.use("/api/notifications", notificationRoute);
 app.use("/api/admin", adminRoute);
 app.use("/api/ratings", ratingRoute);
@@ -62,12 +60,24 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+let server;
+
+const startServer = async () => {
+  await connectDB();
+
+  server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+};
+
+startServer();
 
 process.on("unhandledRejection", (err) => {
   console.log("UNHANDLED REJECTION! Shutting down...");
   console.log(err);
-  server.close(() => process.exit(1));
+  if (server) {
+    server.close(() => process.exit(1));
+  } else {
+    process.exit(1);
+  }
 });

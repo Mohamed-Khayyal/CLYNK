@@ -129,8 +129,8 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     photo = current.recordset[0]?.photo || null;
   }
 
-  let updateQuery;
-  let selectQuery;
+  let updateProfile;
+  let selectProfile;
 
   if (user_type === "patient") {
     let { full_name, date_of_birth, gender, phone } = data;
@@ -140,7 +140,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       return next(new AppError("Invalid full_name value", 400));
     }
 
-    updateQuery = sql.query`
+    updateProfile = () => sql.query`
       UPDATE dbo.Patients
       SET
         full_name     = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
@@ -150,7 +150,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       WHERE user_id = ${user_id};
     `;
 
-    selectQuery = sql.query`
+    selectProfile = () => sql.query`
       SELECT full_name, date_of_birth, gender, phone
       FROM dbo.Patients
       WHERE user_id = ${user_id};
@@ -182,7 +182,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
 
     if (Array.isArray(work_days)) work_days = work_days.join(",");
 
-    updateQuery = sql.query`
+    updateProfile = () => sql.query`
       UPDATE dbo.Doctors
       SET
         full_name           = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
@@ -198,7 +198,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       WHERE user_id = ${user_id};
     `;
 
-    selectQuery = sql.query`
+    selectProfile = () => sql.query`
       SELECT
         full_name,
         gender,
@@ -270,7 +270,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       );
     }
 
-    updateQuery = sql.query`
+    updateProfile = () => sql.query`
       UPDATE dbo.Staff
       SET
         full_name = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
@@ -282,7 +282,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       WHERE user_id = ${user_id};
     `;
 
-    selectQuery = sql.query`
+    selectProfile = () => sql.query`
       SELECT
         full_name,
         clinic_id,
@@ -310,15 +310,15 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       );
     }
 
-    updateQuery = full_name
-      ? sql.query`
+    updateProfile = full_name
+      ? () => sql.query`
           UPDATE dbo.Admins
           SET full_name = CAST(${full_name} AS NVARCHAR(150))
           WHERE user_id = ${user_id};
         `
-      : { rowsAffected: [1] };
+      : async () => ({ rowsAffected: [1] });
 
-    selectQuery = sql.query`
+    selectProfile = () => sql.query`
       SELECT full_name
       FROM dbo.Admins
       WHERE user_id = ${user_id};
@@ -327,12 +327,12 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     return next(new AppError("Profile update is not allowed", 403));
   }
 
-  const result = updateQuery.rowsAffected ? updateQuery : await updateQuery;
+  const result = await updateProfile();
   if (result.rowsAffected[0] === 0) {
     return next(new AppError("Profile not found", 404));
   }
 
-  const profile = selectQuery ? (await selectQuery).recordset[0] : null;
+  const profile = selectProfile ? (await selectProfile()).recordset[0] : null;
 
   res.status(200).json({
     status: "success",

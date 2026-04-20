@@ -61,10 +61,10 @@ exports.signup = catchAsync(async (req, res, next) => {
 
       await transaction.request().query`
         INSERT INTO dbo.Patients
-        (user_id, full_name, date_of_birth, gender, phone, )
+        (user_id, full_name, date_of_birth, gender, phone)
         VALUES
         (${user.user_id}, ${full_name}, ${date_of_birth || null},
-         ${gender || null}, ${phone || null}, || null});
+         ${gender || null}, ${phone || null});
       `;
     }
     if (user_type === "doctor") {
