@@ -2,9 +2,14 @@ const { sql } = require("../config/db.Config");
 const catchAsync = require("../utilts/catch.Async");
 const AppError = require("../utilts/app.Error");
 const { createNotification } = require("../utilts/notification");
+const {
+  attachGeoLocation,
+  attachGeoLocationToMany,
+  normalizeGeoLocation,
+} = require("../utilts/geo.Location");
 
 exports.createClinic = catchAsync(async (req, res, next) => {
-  const { name, address, location, phone, email } = req.body;
+  const { name, address, location, phone, email, geo_location } = req.body;
 
   const ownerUserId = req.user.user_id;
 
@@ -23,21 +28,42 @@ exports.createClinic = catchAsync(async (req, res, next) => {
     return next(new AppError("You have already created a clinic", 409));
   }
 
-  const result = await sql.query`
-    INSERT INTO dbo.Clinics
-      (owner_user_id, name, address, location, phone, email, status)
-    OUTPUT INSERTED.clinic_id, INSERTED.status
-    VALUES
-      (${ownerUserId},
-       ${name},
-       ${address || null},
-       ${location},
-       ${phone || null},
-       ${email},
-       'pending');
-  `;
+  const clinicGeoLocation = normalizeGeoLocation(geo_location);
 
-  const clinic = result.recordset[0];
+  const result = clinicGeoLocation
+    ? await sql.query`
+        INSERT INTO dbo.Clinics
+          (owner_user_id, name, address, location, phone, email, status, geo_location)
+        OUTPUT INSERTED.clinic_id, INSERTED.status
+        VALUES
+          (${ownerUserId},
+           ${name},
+           ${address || null},
+           ${location},
+           ${phone || null},
+           ${email},
+           'pending',
+           geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
+      `
+    : await sql.query`
+        INSERT INTO dbo.Clinics
+          (owner_user_id, name, address, location, phone, email, status, geo_location)
+        OUTPUT INSERTED.clinic_id, INSERTED.status
+        VALUES
+          (${ownerUserId},
+           ${name},
+           ${address || null},
+           ${location},
+           ${phone || null},
+           ${email},
+           'pending',
+           CAST(NULL AS GEOGRAPHY));
+      `;
+
+  const clinic = {
+    ...result.recordset[0],
+    geo_location: clinicGeoLocation || null,
+  };
 
   const adminsResult = await sql.query`
     SELECT user_id FROM dbo.Admins;
@@ -64,6 +90,8 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
       c.clinic_id,
       c.name,
       c.location,
+      c.geo_location.Lat AS geo_location_latitude,
+      c.geo_location.Long AS geo_location_longitude,
       c.phone,
       ISNULL(ds.doctors_count, 0) AS doctors_count,
       ISNULL(rs.total_ratings, 0) AS total_ratings,
@@ -98,7 +126,7 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
   res.status(200).json({
     status: "success",
     results: result.recordset.length,
-    clinics: result.recordset,
+    clinics: attachGeoLocationToMany(result.recordset),
   });
 });
 
@@ -157,6 +185,8 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
         c.clinic_id,
         c.name,
         c.location,
+        c.geo_location.Lat AS geo_location_latitude,
+        c.geo_location.Long AS geo_location_longitude,
         c.phone,
         ISNULL(rs.total_ratings, 0) AS total_ratings,
         CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
@@ -196,7 +226,7 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
-    clinic,
+    clinic: attachGeoLocation(clinic),
     doctors: staff.recordset,
   });
 });

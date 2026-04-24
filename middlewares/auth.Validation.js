@@ -1,4 +1,5 @@
 const AppError = require("../utilts/app.Error");
+const { normalizeGeoLocation } = require("../utilts/geo.Location");
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
@@ -64,6 +65,12 @@ exports.signupValidation = (req, res, next) => {
 
     if (!TIME_REGEX.test(work_from) || !TIME_REGEX.test(work_to)) {
       return next(new AppError("Invalid doctor working time format", 400));
+    }
+
+    try {
+      normalizeGeoLocation(profile.geo_location, "profile.geo_location");
+    } catch (err) {
+      return next(err);
     }
   }
 

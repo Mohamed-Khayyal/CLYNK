@@ -4,6 +4,10 @@ const { sql } = require("../config/db.Config");
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
 const { createNotification } = require("../utilts/notification");
+const {
+  attachGeoLocation,
+  normalizeGeoLocation,
+} = require("../utilts/geo.Location");
 
 const signAccessToken = (payload) =>
   jwt.sign(payload, process.env.JWT_SECRET, {
@@ -80,17 +84,35 @@ exports.signup = catchAsync(async (req, res, next) => {
         work_from,
         work_to,
         location,
+        geo_location,
       } = profile;
+      const doctorGeoLocation = normalizeGeoLocation(geo_location, "profile.geo_location");
 
-      await transaction.request().query`
-        INSERT INTO dbo.Doctors
-        (user_id, full_name, license_number, gender, years_of_experience,
-         bio, consultation_price, specialist, work_days, work_from, work_to, location)
-        VALUES
-        (${user.user_id}, ${full_name}, ${license_number}, ${gender || null},
-         ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
-         ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null});
-      `;
+      if (doctorGeoLocation) {
+        await transaction.request().query`
+          INSERT INTO dbo.Doctors
+          (user_id, full_name, license_number, gender, years_of_experience,
+           bio, consultation_price, specialist, work_days, work_from, work_to, location,
+           geo_location)
+          VALUES
+          (${user.user_id}, ${full_name}, ${license_number}, ${gender || null},
+           ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
+           ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
+           geography::Point(${doctorGeoLocation.latitude}, ${doctorGeoLocation.longitude}, 4326));
+        `;
+      } else {
+        await transaction.request().query`
+          INSERT INTO dbo.Doctors
+          (user_id, full_name, license_number, gender, years_of_experience,
+           bio, consultation_price, specialist, work_days, work_from, work_to, location,
+           geo_location)
+          VALUES
+          (${user.user_id}, ${full_name}, ${license_number}, ${gender || null},
+           ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
+           ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
+           CAST(NULL AS GEOGRAPHY));
+        `;
+      }
 
       const admins = await transaction.request().query`
         SELECT user_id FROM dbo.Admins;
@@ -212,30 +234,64 @@ exports.login = catchAsync(async (req, res, next) => {
           CONVERT(VARCHAR(5), work_to, 108) AS work_to,
           consultation_price,
           location,
+          geo_location.Lat AS geo_location_latitude,
+          geo_location.Long AS geo_location_longitude,
           years_of_experience,
           bio,
           is_verified
         FROM dbo.Doctors WHERE user_id = ${user.user_id};
       `
     ).recordset[0];
+
+    attachGeoLocation(profile);
+
+    const clinic = (
+      await sql.query`
+        SELECT
+          clinic_id,
+          name,
+          address,
+          location,
+          phone,
+          email,
+          status,
+          geo_location.Lat AS geo_location_latitude,
+          geo_location.Long AS geo_location_longitude
+        FROM dbo.Clinics
+        WHERE owner_user_id = ${user.user_id};
+      `
+    ).recordset[0];
+
+    if (clinic && profile) {
+      profile.clinic = attachGeoLocation(clinic);
+    }
   }
 
   if (user.user_type === "staff") {
     profile = (
       await sql.query`
         SELECT
-          full_name,
-          clinic_id,
-          role_title,
-          specialist,
-          work_days,
-          CONVERT(VARCHAR(5), work_from, 108) AS work_from,
-          CONVERT(VARCHAR(5), work_to, 108) AS work_to,
-          consultation_price,
-          is_verified
-        FROM dbo.Staff WHERE user_id = ${user.user_id};
+          s.full_name,
+          s.clinic_id,
+          s.role_title,
+          s.specialist,
+          s.work_days,
+          CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
+          CONVERT(VARCHAR(5), s.work_to, 108) AS work_to,
+          s.consultation_price,
+          s.is_verified,
+          c.name AS clinic_name,
+          c.location AS clinic_location,
+          c.geo_location.Lat AS clinic_geo_location_latitude,
+          c.geo_location.Long AS clinic_geo_location_longitude
+        FROM dbo.Staff s
+        JOIN dbo.Clinics c
+          ON c.clinic_id = s.clinic_id
+        WHERE s.user_id = ${user.user_id};
       `
     ).recordset[0];
+
+    attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
   }
 
   if (user.user_type === "admin") {

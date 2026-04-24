@@ -261,7 +261,6 @@ ALTER TABLE dbo.Doctors
 ADD geo_location GEOGRAPHY NULL;
 GO
 
-
 CREATE TABLE dbo.Prescriptions (
     prescription_id INT IDENTITY(1,1) PRIMARY KEY,
 

@@ -1,6 +1,10 @@
 const { sql } = require("../config/db.Config");
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
+const {
+  attachGeoLocation,
+  attachGeoLocationToMany,
+} = require("../utilts/geo.Location");
 
 exports.getDoctors = catchAsync(async (req, res) => {
   const { specialist } = req.query;
@@ -25,6 +29,8 @@ exports.getDoctors = catchAsync(async (req, res) => {
       CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
       d.work_days,
       d.location,
+      d.geo_location.Lat AS geo_location_latitude,
+      d.geo_location.Long AS geo_location_longitude,
       d.specialist,
       u.photo,
       ISNULL(bs.total_bookings, 0)      AS total_bookings,
@@ -73,7 +79,7 @@ exports.getDoctors = catchAsync(async (req, res) => {
   res.status(200).json({
     status: "success",
     results: result.recordset.length,
-    doctors: result.recordset,
+    doctors: attachGeoLocationToMany(result.recordset),
   });
 });
 
@@ -97,6 +103,8 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
       CONVERT(VARCHAR(5), d.work_from,108) AS work_from,
       CONVERT(VARCHAR(5), d.work_to,108)   AS work_to,
       d.location,
+      d.geo_location.Lat AS geo_location_latitude,
+      d.geo_location.Long AS geo_location_longitude,
       d.consultation_price,
       d.years_of_experience,
       d.bio,
@@ -145,9 +153,7 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     status: "success",
-    doctor: {
-      ...doctor.recordset[0],
-    },
+    doctor: attachGeoLocation(doctor.recordset[0]),
   });
 });
 
@@ -281,6 +287,8 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
         CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
         d.consultation_price,
         d.location,
+        d.geo_location.Lat AS geo_location_latitude,
+        d.geo_location.Long AS geo_location_longitude,
         u.photo,
         CAST(NULL AS INT) AS clinic_id,
         CAST(NULL AS NVARCHAR(150)) AS clinic_name,
@@ -329,6 +337,8 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
         CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
         s.consultation_price,
         c.location,
+        c.geo_location.Lat AS geo_location_latitude,
+        c.geo_location.Long AS geo_location_longitude,
         su.photo,
         c.clinic_id,
         c.name AS clinic_name,
@@ -372,6 +382,6 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
   res.status(200).json({
     status: "success",
     results: result.recordset.length,
-    doctors: result.recordset,
+    doctors: attachGeoLocationToMany(result.recordset),
   });
 });
