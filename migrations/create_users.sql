@@ -7,6 +7,8 @@ CREATE TABLE dbo.Users (
     user_id INT IDENTITY(1,1) PRIMARY KEY,
     email VARCHAR(150) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
+    password_reset_token VARCHAR(64) NULL,
+    password_reset_expires DATETIME2 NULL,
     photo VARCHAR(500) NULL,
 
     user_type VARCHAR(20) NOT NULL
@@ -18,6 +20,11 @@ CREATE TABLE dbo.Users (
 GO
 
 CREATE INDEX IX_Users_Email ON dbo.Users(email);
+GO
+
+CREATE INDEX IX_Users_PasswordResetToken
+ON dbo.Users(password_reset_token)
+WHERE password_reset_token IS NOT NULL;
 GO
 
 CREATE TABLE dbo.Admins (

@@ -172,6 +172,47 @@ exports.loginValidation = (req, res, next) => {
   next();
 };
 
+exports.forgotPasswordValidation = (req, res, next) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return next(new AppError("Email is required", 400));
+  }
+
+  if (!EMAIL_REGEX.test(email)) {
+    return next(new AppError("Invalid email format", 400));
+  }
+
+  next();
+};
+
+exports.resetPasswordValidation = (req, res, next) => {
+  const { token } = req.params;
+  const { password, confirm_password } = req.body;
+
+  if (!token) {
+    return next(new AppError("Password reset token is required", 400));
+  }
+
+  if (typeof token !== "string" || !/^[a-f0-9]{64}$/i.test(token)) {
+    return next(new AppError("Invalid password reset token format", 400));
+  }
+
+  if (!password) {
+    return next(new AppError("Password is required", 400));
+  }
+
+  if (typeof password !== "string" || password.length < 8) {
+    return next(new AppError("Password must be at least 8 characters", 400));
+  }
+
+  if (confirm_password !== undefined && confirm_password !== password) {
+    return next(new AppError("Password confirmation does not match", 400));
+  }
+
+  next();
+};
+
 exports.refreshValidation = (req, res, next) => {
   if (!req.cookies || !req.cookies.refresh_token) {
     return next(new AppError("Refresh token is missing", 401));

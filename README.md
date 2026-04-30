@@ -74,6 +74,8 @@ This project supports:
 - Access and refresh tokens are signed with JWT
 - Tokens are stored in HTTP-only cookies: `jwt` and `refresh_token`
 - Protected routes use role-based authorization through `protect` and `restrictTo`
+- Password reset uses a one-time emailed token that is stored hashed and expires automatically
+- Doctor accounts receive an email telling them to wait for admin verification before verified features are available
 
 ### Clinics and staff
 
@@ -136,6 +138,7 @@ Main tables created by the migration scripts:
 - `migrations/create_users.sql`: base schema for users, clinics, doctors, patients, staff, bookings, notifications, and prescription-related tables
 - `migrations/create_ratings.sql`: ratings table and indexes
 - `migrations/add_prescription_access_flow.sql`: additive migration for prescription access workflow and related indexes
+- `migrations/add_password_reset_fields.sql`: additive migration for password reset token storage
 
 ## Environment Variables
 
@@ -169,6 +172,15 @@ ADMIN_RATE_LIMIT_MAX=50
 CLOUDINARY_CLOUD_NAME=your_cloud_name
 CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
+
+EMAIL_HOST=smtp.example.com
+EMAIL_PORT=587
+EMAIL_USERNAME=your_email_username
+EMAIL_PASSWORD=your_email_password
+EMAIL_FROM=no-reply@example.com
+FRONTEND_URL=http://localhost:3000
+PASSWORD_RESET_URL=http://localhost:3000/reset-password/:token
+PASSWORD_RESET_TOKEN_EXPIRES_MINUTES=10
 ```
 
 ## Installation
@@ -199,6 +211,7 @@ Default port is `3001` unless `PORT` is provided.
 2. Run `migrations/create_users.sql`.
 3. Run `migrations/create_ratings.sql`.
 4. Run `migrations/add_prescription_access_flow.sql` if your database was created before the prescription access flow was added.
+5. Run `migrations/add_password_reset_fields.sql` if your database was created before password reset support was added.
 
 If you are starting from scratch and `create_users.sql` already includes the latest prescription schema, review whether the final migration is still needed in your environment before applying it.
 
@@ -208,6 +221,9 @@ If you are starting from scratch and `create_users.sql` already includes the lat
 
 - `POST /api/auth/signup`
 - `POST /api/auth/login`
+- `POST /api/auth/forgot-password`
+- `POST /api/auth/forget-password`
+- `PATCH /api/auth/reset-password/:token`
 - `POST /api/auth/refresh`
 - `POST /api/auth/logout`
 

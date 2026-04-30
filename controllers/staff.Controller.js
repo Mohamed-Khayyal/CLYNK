@@ -3,9 +3,21 @@ const { sql } = require("../config/db.Config");
 const catchAsync = require("../utilts/catch.Async");
 const AppError = require("../utilts/app.Error");
 const { createNotification } = require("../utilts/notification");
+const Email = require("../utilts/email");
 
 const ALLOWED_STAFF_ROLES = new Set(["doctor", "nurse", "receptionist"]);
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
+
+const sendStaffDoctorPendingVerificationEmail = async ({ email, full_name }) => {
+  try {
+    await new Email({
+      email,
+      name: full_name || email,
+    }).sendDoctorPendingVerification();
+  } catch (err) {
+    console.error("Failed to send staff doctor pending verification email:", err.message);
+  }
+};
 
 exports.createStaffForClinic = catchAsync(async (req, res, next) => {
   const {
@@ -131,6 +143,10 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
       title: "توثيق الموظف قيد الانتظار",
       message: `تم إنشاء حساب موظف باسم "${full_name}" وهو بانتظار التوثيق.`,
     });
+  }
+
+  if (isDoctor) {
+    await sendStaffDoctorPendingVerificationEmail({ email, full_name });
   }
 
   res.status(201).json({

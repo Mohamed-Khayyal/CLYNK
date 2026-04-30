@@ -1,4 +1,5 @@
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const { sql } = require("../config/db.Config");
 const AppError = require("../utilts/app.Error");
@@ -8,6 +9,34 @@ const {
   attachGeoLocation,
   normalizeGeoLocation,
 } = require("../utilts/geo.Location");
+const Email = require("../utilts/email");
+
+const PASSWORD_RESET_TOKEN_BYTES = 32;
+const DEFAULT_PASSWORD_RESET_EXPIRES_MINUTES = 10;
+
+const getPasswordResetExpiresMinutes = () => {
+  const minutes = Number(process.env.PASSWORD_RESET_TOKEN_EXPIRES_MINUTES);
+
+  if (Number.isFinite(minutes) && minutes > 0) {
+    return Math.floor(minutes);
+  }
+
+  return DEFAULT_PASSWORD_RESET_EXPIRES_MINUTES;
+};
+
+const hashPasswordResetToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+const buildPasswordResetUrl = (req, token) => {
+  const frontendResetUrl = process.env.PASSWORD_RESET_URL;
+
+  if (frontendResetUrl) {
+    return frontendResetUrl.replace(":token", token);
+  }
+
+  const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+  return `${frontendUrl.replace(/\/$/, "")}/reset-password/${token}`;
+};
 
 const signAccessToken = (payload) =>
   jwt.sign(payload, process.env.JWT_SECRET, {
@@ -35,6 +64,17 @@ const sendRefreshCookie = (res, token) => {
     sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     maxAge: 30 * 24 * 60 * 60 * 1000,
   });
+};
+
+const sendDoctorPendingVerificationEmail = async ({ email, profile }) => {
+  try {
+    await new Email({
+      email,
+      name: profile?.full_name || email,
+    }).sendDoctorPendingVerification();
+  } catch (err) {
+    console.error("Failed to send doctor pending verification email:", err.message);
+  }
 };
 
 exports.signup = catchAsync(async (req, res, next) => {
@@ -172,6 +212,12 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
 
     await transaction.commit();
+
+    if (user_type === "doctor") {
+      await sendDoctorPendingVerificationEmail({ email, profile });
+    } else {
+      await sendSignupWelcomeEmail({ email, profile });
+    }
 
     const accessToken = signAccessToken({
       user_id: user.user_id,
@@ -348,6 +394,103 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   sendAccessCookie(res, accessToken);
 
   res.status(200).json({ status: "success" });
+});
+
+exports.forgotPassword = catchAsync(async (req, res, next) => {
+  const { email } = req.body;
+
+  const user = (
+    await sql.query`
+      SELECT user_id, email
+      FROM dbo.Users
+      WHERE email = ${email} AND is_active = 1;
+    `
+  ).recordset[0];
+
+  const responseMessage =
+    "If an active account exists for this email, a password reset message has been sent.";
+
+  if (!user) {
+    return res.status(200).json({
+      status: "success",
+      message: responseMessage,
+    });
+  }
+
+  const resetToken = crypto
+    .randomBytes(PASSWORD_RESET_TOKEN_BYTES)
+    .toString("hex");
+  const hashedResetToken = hashPasswordResetToken(resetToken);
+  const expiresMinutes = getPasswordResetExpiresMinutes();
+
+  await sql.query`
+    UPDATE dbo.Users
+    SET password_reset_token = ${hashedResetToken},
+        password_reset_expires = DATEADD(MINUTE, ${expiresMinutes}, SYSDATETIME())
+    WHERE user_id = ${user.user_id};
+  `;
+
+  const resetUrl = buildPasswordResetUrl(req, resetToken);
+
+  try {
+    await new Email({ email: user.email }, resetUrl).sendPasswordReset({
+      expiresMinutes,
+    });
+  } catch (err) {
+    await sql.query`
+      UPDATE dbo.Users
+      SET password_reset_token = NULL,
+          password_reset_expires = NULL
+      WHERE user_id = ${user.user_id};
+    `;
+
+    return next(
+      new AppError("Could not send password reset email. Please try again later.", 500),
+    );
+  }
+
+  res.status(200).json({
+    status: "success",
+    message: responseMessage,
+  });
+});
+
+exports.resetPassword = catchAsync(async (req, res, next) => {
+  const { token } = req.params;
+  const { password } = req.body;
+  const hashedResetToken = hashPasswordResetToken(token);
+
+  const user = (
+    await sql.query`
+      SELECT user_id
+      FROM dbo.Users
+      WHERE password_reset_token = ${hashedResetToken}
+        AND password_reset_expires > SYSDATETIME()
+        AND is_active = 1;
+    `
+  ).recordset[0];
+
+  if (!user) {
+    return next(new AppError("Password reset token is invalid or has expired", 400));
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  await sql.query`
+    UPDATE dbo.Users
+    SET password = ${hashedPassword},
+        password_reset_token = NULL,
+        password_reset_expires = NULL
+    WHERE user_id = ${user.user_id};
+  `;
+
+  res.cookie("jwt", "", { expires: new Date(0) });
+  res.cookie("refresh_token", "", { expires: new Date(0) });
+
+  res.status(200).json({
+    status: "success",
+    message: "Password has been reset successfully. Please log in with your new password.",
+  });
 });
 
 exports.logout = (req, res) => {
