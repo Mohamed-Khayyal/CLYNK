@@ -76,6 +76,30 @@ module.exports = class Email {
     );
   }
 
+  async sendWelcome() {
+    const escapedFirstName = escapeHtml(this.firstName);
+    const text = [
+      `Hi ${this.firstName},`,
+      "",
+      "Welcome to Clynk. Your account has been created successfully.",
+      "You can now sign in and start using your account.",
+      "",
+      "Thanks for joining us.",
+    ].join("\n");
+
+    const html = `
+      <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937;max-width:640px;margin:0 auto;padding:24px">
+        <h2 style="margin:0 0 12px;color:#111827">Welcome to Clynk</h2>
+        <p>Hi ${escapedFirstName},</p>
+        <p>Your account has been created successfully.</p>
+        <p>You can now sign in and start using your account.</p>
+        <p>Thanks for joining us.</p>
+      </div>
+    `;
+
+    await this.send("Welcome to Clynk", text, html);
+  }
+
   async sendDoctorPendingVerification() {
     const escapedFirstName = escapeHtml(this.firstName);
     const text = [

@@ -28,10 +28,13 @@ exports.createAdmin = catchAsync(async (req, res, next) => {
   }
 
   const hashedPassword = await bcrypt.hash(password, 12);
-  const transaction = new sql.Transaction();
-  await transaction.begin();
+  const transaction = new sql.Transaction(sql.globalConnectionPool);
+  let transactionStarted = false;
 
   try {
+    await transaction.begin();
+    transactionStarted = true;
+
     const userResult = await transaction.request().query`
       INSERT INTO dbo.Users (email, password, user_type)
       OUTPUT INSERTED.user_id
@@ -56,7 +59,13 @@ exports.createAdmin = catchAsync(async (req, res, next) => {
       },
     });
   } catch (err) {
-    await transaction.rollback();
+    if (transactionStarted) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackErr) {
+        console.error("Failed to roll back admin creation transaction:", rollbackErr.message);
+      }
+    }
     next(err);
   }
 });

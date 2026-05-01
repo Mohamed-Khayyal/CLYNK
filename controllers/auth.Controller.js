@@ -77,6 +77,17 @@ const sendDoctorPendingVerificationEmail = async ({ email, profile }) => {
   }
 };
 
+const sendSignupWelcomeEmail = async ({ email, profile }) => {
+  try {
+    await new Email({
+      email,
+      name: profile?.full_name || email,
+    }).sendWelcome();
+  } catch (err) {
+    console.error("Failed to send signup welcome email:", err.message);
+  }
+};
+
 exports.signup = catchAsync(async (req, res, next) => {
   const { email, password, user_type, profile } = req.body;
 
@@ -88,17 +99,21 @@ exports.signup = catchAsync(async (req, res, next) => {
   }
 
   const hashedPassword = await bcrypt.hash(password, 12);
-  const transaction = new sql.Transaction();
-  await transaction.begin();
+  const transaction = new sql.Transaction(sql.globalConnectionPool);
+  let transactionStarted = false;
+  let user;
 
   try {
+    await transaction.begin();
+    transactionStarted = true;
+
     const userResult = await transaction.request().query`
       INSERT INTO dbo.Users (email, password, user_type)
       OUTPUT INSERTED.user_id, INSERTED.user_type
       VALUES (${email}, ${hashedPassword}, ${user_type});
     `;
 
-    const user = userResult.recordset[0];
+    user = userResult.recordset[0];
 
     if (user_type === "patient") {
       const { full_name, date_of_birth, gender, phone } = profile;
@@ -212,35 +227,41 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
 
     await transaction.commit();
-
-    if (user_type === "doctor") {
-      await sendDoctorPendingVerificationEmail({ email, profile });
-    } else {
-      await sendSignupWelcomeEmail({ email, profile });
-    }
-
-    const accessToken = signAccessToken({
-      user_id: user.user_id,
-      role: user.user_type,
-    });
-
-    const refreshToken = signRefreshToken({ user_id: user.user_id });
-
-    sendAccessCookie(res, accessToken);
-    sendRefreshCookie(res, refreshToken);
-
-    res.status(201).json({
-      status: "success",
-      user: {
-        user_id: user.user_id,
-        email,
-        role: user.user_type,
-      },
-    });
   } catch (err) {
-    await transaction.rollback();
-    next(err);
+    if (transactionStarted) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackErr) {
+        console.error("Failed to roll back signup transaction:", rollbackErr.message);
+      }
+    }
+    return next(err);
   }
+
+  if (user_type === "doctor") {
+    await sendDoctorPendingVerificationEmail({ email, profile });
+  } else {
+    await sendSignupWelcomeEmail({ email, profile });
+  }
+
+  const accessToken = signAccessToken({
+    user_id: user.user_id,
+    role: user.user_type,
+  });
+
+  const refreshToken = signRefreshToken({ user_id: user.user_id });
+
+  sendAccessCookie(res, accessToken);
+  sendRefreshCookie(res, refreshToken);
+
+  res.status(201).json({
+    status: "success",
+    user: {
+      user_id: user.user_id,
+      email,
+      role: user.user_type,
+    },
+  });
 });
 
 exports.login = catchAsync(async (req, res, next) => {
