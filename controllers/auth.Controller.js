@@ -284,7 +284,7 @@ exports.login = catchAsync(async (req, res, next) => {
   if (user.user_type === "patient") {
     profile = (
       await sql.query`
-        SELECT full_name, date_of_birth, gender, phone
+        SELECT patient_id, full_name, date_of_birth, gender, phone
         FROM dbo.Patients WHERE user_id = ${user.user_id};
       `
     ).recordset[0];
@@ -294,6 +294,7 @@ exports.login = catchAsync(async (req, res, next) => {
     profile = (
       await sql.query`
         SELECT
+          doctor_id,
           full_name,
           specialist,
           work_days,
@@ -338,6 +339,7 @@ exports.login = catchAsync(async (req, res, next) => {
     profile = (
       await sql.query`
         SELECT
+          staff_id,
           s.full_name,
           s.clinic_id,
           s.role_title,
@@ -364,7 +366,7 @@ exports.login = catchAsync(async (req, res, next) => {
   if (user.user_type === "admin") {
     profile = (
       await sql.query`
-        SELECT full_name FROM dbo.Admins WHERE user_id = ${user.user_id};
+        SELECT admin_id, full_name FROM dbo.Admins WHERE user_id = ${user.user_id};
       `
     ).recordset[0];
   }
