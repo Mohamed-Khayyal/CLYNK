@@ -145,6 +145,108 @@ exports.getClinics = catchAsync(async (req, res) => {
   });
 });
 
+exports.getPendingClinics = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      c.clinic_id,
+      c.name,
+      c.email,
+      c.phone,
+      c.location,
+      c.status,
+      c.created_at,
+
+      u.email AS owner_email,
+
+      ISNULL(ss.total_staff, 0) AS total_staff,
+      ISNULL(r.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
+
+    FROM dbo.Clinics c
+
+    JOIN dbo.Users u
+      ON c.owner_user_id = u.user_id
+
+    OUTER APPLY (
+      SELECT COUNT(*) AS total_staff
+      FROM dbo.Staff s
+      JOIN dbo.Users su
+        ON su.user_id = s.user_id
+      WHERE s.clinic_id = c.clinic_id
+        AND su.is_active = 1
+    ) ss
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings rt
+      WHERE rt.clinic_id = c.clinic_id
+    ) r
+
+    WHERE c.status = 'pending'
+
+    ORDER BY c.created_at DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    clinics: result.recordset,
+  });
+});
+
+exports.getApprovedClinics = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      c.clinic_id,
+      c.name,
+      c.email,
+      c.phone,
+      c.location,
+      c.status,
+      c.created_at,
+
+      u.email AS owner_email,
+
+      ISNULL(ss.total_staff, 0) AS total_staff,
+      ISNULL(r.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
+
+    FROM dbo.Clinics c
+
+    JOIN dbo.Users u
+      ON c.owner_user_id = u.user_id
+
+    OUTER APPLY (
+      SELECT COUNT(*) AS total_staff
+      FROM dbo.Staff s
+      JOIN dbo.Users su
+        ON su.user_id = s.user_id
+      WHERE s.clinic_id = c.clinic_id
+        AND su.is_active = 1
+    ) ss
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings rt
+      WHERE rt.clinic_id = c.clinic_id
+    ) r
+
+    WHERE c.status = 'approved'
+
+    ORDER BY c.created_at DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    clinics: result.recordset,
+  });
+});
+
 exports.approveClinic = catchAsync(async (req, res, next) => {
   const clinicId = Number(req.params.id);
   const adminUserId = req.user.user_id;
@@ -259,6 +361,177 @@ exports.rejectClinic = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.getAllDoctors = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      d.doctor_id,
+      d.user_id,
+      u.email,
+      d.full_name,
+      d.gender,
+      d.years_of_experience,
+      d.bio,
+      d.consultation_price,
+      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
+      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
+      d.work_days,
+      d.specialist,
+      d.location,
+      d.is_verified,
+      u.photo,
+      u.is_active,
+
+      ISNULL(bs.total_bookings, 0) AS total_bookings,
+      ISNULL(bs.total_patients, 0) AS total_patients,
+      ISNULL(rs.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
+
+    FROM dbo.Doctors d
+
+    JOIN dbo.Users u
+      ON d.user_id = u.user_id
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_bookings,
+        COUNT(DISTINCT b.patient_user_id) AS total_patients
+      FROM dbo.Bookings b
+      WHERE b.doctor_id = d.doctor_id
+        AND b.status = 'confirmed'
+    ) bs
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.doctor_id = d.doctor_id
+    ) rs
+
+    ORDER BY u.created_at DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    doctors: result.recordset,
+  });
+});
+
+exports.getVerifiedDoctors = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      d.doctor_id,
+      d.user_id,
+      u.email,
+      d.full_name,
+      d.gender,
+      d.years_of_experience,
+      d.bio,
+      d.consultation_price,
+      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
+      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
+      d.work_days,
+      d.specialist,
+      d.location,
+      d.is_verified,
+      u.photo,
+      u.is_active,
+      ISNULL(bs.total_bookings, 0) AS total_bookings,
+      ISNULL(bs.total_patients, 0) AS total_patients,
+      ISNULL(rs.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
+
+    FROM dbo.Doctors d
+
+    JOIN dbo.Users u
+      ON d.user_id = u.user_id
+
+    LEFT JOIN dbo.Clinics c
+      ON c.owner_user_id = d.user_id
+     AND c.status = 'approved'
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_bookings,
+        COUNT(DISTINCT b.patient_user_id) AS total_patients
+      FROM dbo.Bookings b
+      WHERE b.doctor_id = d.doctor_id
+        AND b.status = 'confirmed'
+    ) bs
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.doctor_id = d.doctor_id
+    ) rs
+
+    WHERE
+      d.is_verified = 1
+      AND c.clinic_id IS NULL
+
+    ORDER BY
+      ISNULL(bs.total_bookings, 0) DESC,
+      u.created_at DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    doctors: result.recordset,
+  });
+});
+
+exports.getUnverifiedDoctors = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      d.doctor_id,
+      d.user_id,
+      u.email,
+      d.full_name,
+      d.gender,
+      d.years_of_experience,
+      d.bio,
+      d.consultation_price,
+      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
+      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
+      d.work_days,
+      d.specialist,
+      d.location,
+      d.is_verified,
+      u.photo,
+      u.is_active,
+
+      ISNULL(rs.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
+
+    FROM dbo.Doctors d
+
+    JOIN dbo.Users u
+      ON d.user_id = u.user_id
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.doctor_id = d.doctor_id
+    ) rs
+
+    WHERE d.is_verified = 0
+
+    ORDER BY u.created_at DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    doctors: result.recordset,
+  });
+});
+
 exports.verifyDoctor = catchAsync(async (req, res, next) => {
   const doctorId = Number(req.params.id);
   const adminUserId = req.user.user_id;
@@ -363,72 +636,6 @@ exports.unverifyDoctor = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.getAllDoctors = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      d.doctor_id,
-      d.user_id,
-      u.email,
-      d.full_name,
-      d.gender,
-      d.years_of_experience,
-      d.bio,
-      d.consultation_price,
-      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
-      d.work_days,
-      d.specialist,
-      d.location,
-      d.is_verified,
-      u.photo,
-      u.is_active,
-      ISNULL(bs.total_bookings, 0) AS total_bookings,
-      ISNULL(bs.total_patients, 0) AS total_patients,
-      ISNULL(rs.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-
-    FROM dbo.Doctors d
-
-    JOIN dbo.Users u
-      ON d.user_id = u.user_id
-
-    LEFT JOIN dbo.Clinics c
-      ON c.owner_user_id = d.user_id
-     AND c.status = 'approved'
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_bookings,
-        COUNT(DISTINCT b.patient_user_id) AS total_patients
-      FROM dbo.Bookings b
-      WHERE b.doctor_id = d.doctor_id
-        AND b.status = 'confirmed'
-    ) bs
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings r
-      WHERE r.doctor_id = d.doctor_id
-    ) rs
-
-    WHERE
-      d.is_verified = 1
-      AND c.clinic_id IS NULL
-
-    ORDER BY
-      ISNULL(bs.total_bookings, 0) DESC,
-      u.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    doctors: result.recordset,
-  });
-});
-
 exports.getAllStaff = catchAsync(async (req, res) => {
   const result = await sql.query`
     SELECT
@@ -459,6 +666,86 @@ exports.getAllStaff = catchAsync(async (req, res) => {
     JOIN dbo.Users owner_u
       ON owner_u.user_id = c.owner_user_id
     ORDER BY c.clinic_id DESC, s.staff_id DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    staff: result.recordset,
+  });
+});
+
+exports.getVerifiedStaff = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      s.staff_id,
+      s.user_id,
+      u.email,
+      s.full_name,
+      s.role_title,
+      s.specialist,
+      s.work_days,
+      CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
+      CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
+      s.consultation_price,
+      s.is_verified,
+      u.is_active,
+      u.photo,
+
+      c.clinic_id,
+      c.name AS clinic_name,
+      c.status AS clinic_status,
+      c.location AS clinic_location
+
+    FROM dbo.Staff s
+    JOIN dbo.Users u
+      ON u.user_id = s.user_id
+    JOIN dbo.Clinics c
+      ON c.clinic_id = s.clinic_id
+
+    WHERE s.is_verified = 1
+
+    ORDER BY s.staff_id DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    staff: result.recordset,
+  });
+});
+
+exports.getUnverifiedStaff = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      s.staff_id,
+      s.user_id,
+      u.email,
+      s.full_name,
+      s.role_title,
+      s.specialist,
+      s.work_days,
+      CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
+      CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
+      s.consultation_price,
+      s.is_verified,
+      u.is_active,
+      u.photo,
+
+      c.clinic_id,
+      c.name AS clinic_name,
+      c.status AS clinic_status,
+      c.location AS clinic_location
+
+    FROM dbo.Staff s
+    JOIN dbo.Users u
+      ON u.user_id = s.user_id
+    JOIN dbo.Clinics c
+      ON c.clinic_id = s.clinic_id
+
+    WHERE s.is_verified = 0
+
+    ORDER BY s.staff_id DESC;
   `;
 
   res.status(200).json({
