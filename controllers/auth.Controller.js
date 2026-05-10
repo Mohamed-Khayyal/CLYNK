@@ -118,6 +118,12 @@ exports.signup = catchAsync(async (req, res, next) => {
   const transaction = new sql.Transaction(sql.globalConnectionPool);
   let transactionStarted = false;
   let user;
+  const roleIds = {
+    patientid: null,
+    doctorid: null,
+    clinicid: null,
+    staffid: null,
+  };
 
   try {
     await transaction.begin();
@@ -136,13 +142,16 @@ exports.signup = catchAsync(async (req, res, next) => {
     if (user_type === "patient") {
       const { full_name, date_of_birth, gender, phone } = profile;
 
-      await transaction.request().query`
+      const patientResult = await transaction.request().query`
         INSERT INTO dbo.Patients
         (user_id, full_name, date_of_birth, gender, phone)
+        OUTPUT INSERTED.patient_id
         VALUES
         (${user.user_id}, ${full_name}, ${date_of_birth || null},
          ${gender || null}, ${phone || null});
       `;
+
+      roleIds.patientid = patientResult.recordset[0].patient_id;
     }
     if (user_type === "doctor") {
       const {
@@ -165,29 +174,33 @@ exports.signup = catchAsync(async (req, res, next) => {
       );
 
       if (doctorGeoLocation) {
-        await transaction.request().query`
+        const doctorResult = await transaction.request().query`
           INSERT INTO dbo.Doctors
           (user_id, full_name, license_number, gender, years_of_experience,
            bio, consultation_price, specialist, work_days, work_from, work_to, location,
            geo_location)
+          OUTPUT INSERTED.doctor_id
           VALUES
           (${user.user_id}, ${full_name}, ${license_number}, ${gender || null},
            ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
            ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
            geography::Point(${doctorGeoLocation.latitude}, ${doctorGeoLocation.longitude}, 4326));
         `;
+        roleIds.doctorid = doctorResult.recordset[0].doctor_id;
       } else {
-        await transaction.request().query`
+        const doctorResult = await transaction.request().query`
           INSERT INTO dbo.Doctors
           (user_id, full_name, license_number, gender, years_of_experience,
            bio, consultation_price, specialist, work_days, work_from, work_to, location,
            geo_location)
+          OUTPUT INSERTED.doctor_id
           VALUES
           (${user.user_id}, ${full_name}, ${license_number}, ${gender || null},
            ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
            ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
            CAST(NULL AS GEOGRAPHY));
         `;
+        roleIds.doctorid = doctorResult.recordset[0].doctor_id;
       }
 
       const admins = await transaction.request().query`
@@ -218,23 +231,27 @@ exports.signup = catchAsync(async (req, res, next) => {
       const contactEmail = clinic_email || email;
 
       if (clinicGeoLocation) {
-        await transaction.request().query`
+        const clinicResult = await transaction.request().query`
           INSERT INTO dbo.Clinics
             (owner_user_id, name, address, location, phone, email, status, geo_location)
+          OUTPUT INSERTED.clinic_id
           VALUES
             (${user.user_id}, ${name}, ${address || null}, ${location},
              ${phone || null}, ${contactEmail}, 'pending',
              geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
         `;
+        roleIds.clinicid = clinicResult.recordset[0].clinic_id;
       } else {
-        await transaction.request().query`
+        const clinicResult = await transaction.request().query`
           INSERT INTO dbo.Clinics
             (owner_user_id, name, address, location, phone, email, status, geo_location)
+          OUTPUT INSERTED.clinic_id
           VALUES
             (${user.user_id}, ${name}, ${address || null}, ${location},
              ${phone || null}, ${contactEmail}, 'pending',
              CAST(NULL AS GEOGRAPHY));
         `;
+        roleIds.clinicid = clinicResult.recordset[0].clinic_id;
       }
 
       const admins = await transaction.request().query`
@@ -244,8 +261,8 @@ exports.signup = catchAsync(async (req, res, next) => {
       for (const admin of admins.recordset) {
         await createNotification({
           user_id: admin.user_id,
-          title: "Ø·Ù„Ø¨ Ø§Ø¹ØªÙ…Ø§Ø¯ Ø¹ÙŠØ§Ø¯Ø©",
-          message: `ØªÙ… Ø¥Ø±Ø³Ø§Ù„ Ø·Ù„Ø¨ Ø¹ÙŠØ§Ø¯Ø© Ø¨Ø§Ø³Ù… "${name}" ÙˆÙ‡Ùˆ Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©.`,
+          title: "طلب اعتماد عيادة",
+          message: `تم إرسال طلب عيادة باسم "${name}" وهو بانتظار المراجعة.`,
         });
       }
     }
@@ -276,7 +293,7 @@ exports.signup = catchAsync(async (req, res, next) => {
       }
 
       // Insert staff
-      await transaction.request().query`
+      const staffResult = await transaction.request().query`
     INSERT INTO dbo.Staff
     (
       user_id,
@@ -290,6 +307,7 @@ exports.signup = catchAsync(async (req, res, next) => {
       consultation_price,
       is_verified
     )
+    OUTPUT INSERTED.staff_id
     VALUES
     (
       ${user.user_id},
@@ -306,6 +324,8 @@ exports.signup = catchAsync(async (req, res, next) => {
   `;
 
       user.clinic_name = clinic.name;
+      roleIds.clinicid = clinic.clinic_id;
+      roleIds.staffid = staffResult.recordset[0].staff_id;
 
       await createNotification({
         user_id: clinic.owner_user_id,
@@ -351,6 +371,10 @@ exports.signup = catchAsync(async (req, res, next) => {
       user_id: user.user_id,
       email,
       role: user.user_type,
+      patient_id: user.user_type === "patient" ? roleIds.patientid : undefined,
+      doctor_id: user.user_type === "doctor" ? roleIds.doctorid : undefined,
+      clinic_id: user.user_type === "clinic" ? roleIds.clinicid : undefined,
+      staff_id: user.user_type === "staff" ? roleIds.staffid : undefined,
       clinic_name: user.user_type === "staff" ? user.clinic_name : undefined,
     },
   });

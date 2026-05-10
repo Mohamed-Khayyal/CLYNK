@@ -494,8 +494,8 @@ exports.requestPrescriptionAccess = catchAsync(async (req, res, next) => {
 
   await createNotification({
     user_id: booking.patient_user_id,
-    title: "Prescription access request",
-    message: `${provider.full_name} requested permission to write a prescription for your booking on ${formatDate(booking.booking_date)}.`,
+    title: "طلب صلاحية كتابة روشتة",
+    message: `طلب ${provider.full_name} إذنك لكتابة روشتة لحجزك بتاريخ ${formatDate(booking.booking_date)}.`,
   });
 
   res.status(200).json({
@@ -552,8 +552,8 @@ exports.respondToPrescriptionAccess = catchAsync(async (req, res, next) => {
 
   await createNotification({
     user_id: providerUserId,
-    title: "Prescription access response",
-    message: `${booking.patient_name} ${nextStatus} your prescription request for booking on ${formatDate(booking.booking_date)}.`,
+    title: "رد على طلب صلاحية الروشتة",
+    message: `قام ${booking.patient_name} بـ${nextStatus === "accepted" ? "قبول" : "رفض"} طلب كتابة الروشتة لحجز بتاريخ ${formatDate(booking.booking_date)}.`,
   });
 
   res.status(200).json({
@@ -650,8 +650,8 @@ exports.createPrescription = catchAsync(async (req, res, next) => {
 
   await createNotification({
     user_id: booking.patient_user_id,
-    title: "New prescription",
-    message: `${providerName} sent a prescription for your booking on ${formatDate(booking.booking_date)}.`,
+    title: "روشتة جديدة",
+    message: `أرسل ${providerName} روشتة لحجزك بتاريخ ${formatDate(booking.booking_date)}.`,
   });
 
   res.status(201).json({
