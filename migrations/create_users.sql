@@ -12,7 +12,7 @@ CREATE TABLE dbo.Users (
     photo VARCHAR(500) NULL,
 
     user_type VARCHAR(20) NOT NULL
-        CHECK (user_type IN ('patient', 'doctor', 'staff', 'admin')),
+        CHECK (user_type IN ('patient', 'doctor', 'staff', 'clinic', 'admin')),
 
     is_active BIT NOT NULL DEFAULT 1,
     created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
@@ -41,7 +41,7 @@ GO
 
 CREATE TABLE dbo.Clinics (
     clinic_id INT IDENTITY(1,1) PRIMARY KEY,
-    owner_user_id INT NOT NULL,
+    owner_user_id INT NOT NULL UNIQUE,
     verified_by_admin_id INT NULL,
 
     name NVARCHAR(150) NOT NULL UNIQUE,

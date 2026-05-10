@@ -1,3 +1,4 @@
+const bcrypt = require("bcryptjs");
 const { sql } = require("../config/db.Config");
 const catchAsync = require("../utilts/catch.Async");
 const AppError = require("../utilts/app.Error");
@@ -8,62 +9,121 @@ const {
   normalizeGeoLocation,
 } = require("../utilts/geo.Location");
 
+const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
+
 exports.createClinic = catchAsync(async (req, res, next) => {
-  const { name, address, location, phone, email, geo_location } = req.body;
+  const {
+    name,
+    address,
+    location,
+    phone,
+    email,
+    password,
+    photo,
+    geo_location,
+  } = req.body;
 
-  const ownerUserId = req.user.user_id;
-
-  if (!name || !location || !email) {
+  if (!name || !location || !email || !password) {
     return next(
-      new AppError("Clinic name, location, and email are required", 400),
+      new AppError("Clinic name, location, email, and password are required", 400),
     );
   }
 
-  const exists = await sql.query`
-    SELECT clinic_id FROM dbo.Clinics
-    WHERE owner_user_id = ${ownerUserId};
-  `;
-
-  if (exists.recordset.length) {
-    return next(new AppError("You have already created a clinic", 409));
+  if (typeof password !== "string" || password.length < 8) {
+    return next(new AppError("Password must be at least 8 characters", 400));
   }
 
+  if (!EMAIL_REGEX.test(email)) {
+    return next(new AppError("Invalid email format", 400));
+  }
+
+  const existingUser = await sql.query`
+    SELECT user_id FROM dbo.Users WHERE email = ${email};
+  `;
+
+  if (existingUser.recordset.length) {
+    return next(new AppError("Email is already in use", 409));
+  }
+
+  const existingClinic = await sql.query`
+    SELECT clinic_id FROM dbo.Clinics
+    WHERE name = ${name} OR email = ${email};
+  `;
+
+  if (existingClinic.recordset.length) {
+    return next(new AppError("Clinic name or email is already in use", 409));
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 12);
   const clinicGeoLocation = normalizeGeoLocation(geo_location);
+  const transaction = new sql.Transaction(sql.globalConnectionPool);
+  let transactionStarted = false;
+  let clinic;
 
-  const result = clinicGeoLocation
-    ? await sql.query`
-        INSERT INTO dbo.Clinics
-          (owner_user_id, name, address, location, phone, email, status, geo_location)
-        OUTPUT INSERTED.clinic_id, INSERTED.status
-        VALUES
-          (${ownerUserId},
-           ${name},
-           ${address || null},
-           ${location},
-           ${phone || null},
-           ${email},
-           'pending',
-           geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
-      `
-    : await sql.query`
-        INSERT INTO dbo.Clinics
-          (owner_user_id, name, address, location, phone, email, status, geo_location)
-        OUTPUT INSERTED.clinic_id, INSERTED.status
-        VALUES
-          (${ownerUserId},
-           ${name},
-           ${address || null},
-           ${location},
-           ${phone || null},
-           ${email},
-           'pending',
-           CAST(NULL AS GEOGRAPHY));
-      `;
+  try {
+    await transaction.begin();
+    transactionStarted = true;
 
-  const clinic = {
-    ...result.recordset[0],
-    geo_location: clinicGeoLocation || null,
-  };
+    const userResult = await transaction.request().query`
+      INSERT INTO dbo.Users (email, password, user_type, photo)
+      OUTPUT INSERTED.user_id, INSERTED.email, INSERTED.photo
+      VALUES (${email}, ${hashedPassword}, 'clinic', ${photo || null});
+    `;
+
+    const owner = userResult.recordset[0];
+
+    const result = clinicGeoLocation
+      ? await transaction.request().query`
+          INSERT INTO dbo.Clinics
+            (owner_user_id, name, address, location, phone, email, status, geo_location)
+          OUTPUT INSERTED.clinic_id, INSERTED.status
+          VALUES
+            (${owner.user_id},
+             ${name},
+             ${address || null},
+             ${location},
+             ${phone || null},
+             ${email},
+             'pending',
+             geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
+        `
+      : await transaction.request().query`
+          INSERT INTO dbo.Clinics
+            (owner_user_id, name, address, location, phone, email, status, geo_location)
+          OUTPUT INSERTED.clinic_id, INSERTED.status
+          VALUES
+            (${owner.user_id},
+             ${name},
+             ${address || null},
+             ${location},
+             ${phone || null},
+             ${email},
+             'pending',
+             CAST(NULL AS GEOGRAPHY));
+        `;
+
+    clinic = {
+      ...result.recordset[0],
+      owner_user_id: owner.user_id,
+      email: owner.email,
+      photo: owner.photo,
+      geo_location: clinicGeoLocation || null,
+    };
+
+    await transaction.commit();
+  } catch (err) {
+    if (transactionStarted) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackErr) {
+        console.error(
+          "Failed to roll back clinic creation transaction:",
+          rollbackErr.message,
+        );
+      }
+    }
+    return next(err);
+  }
 
   const adminsResult = await sql.query`
     SELECT user_id FROM dbo.Admins;
@@ -93,11 +153,14 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
       c.geo_location.Lat AS geo_location_latitude,
       c.geo_location.Long AS geo_location_longitude,
       c.phone,
+      u.photo,
       ISNULL(ds.doctors_count, 0) AS doctors_count,
       ISNULL(rs.total_ratings, 0) AS total_ratings,
       CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
 
     FROM dbo.Clinics c
+    JOIN dbo.Users u
+      ON u.user_id = c.owner_user_id
 
     OUTER APPLY (
       SELECT COUNT(*) AS doctors_count
@@ -119,6 +182,7 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
     ) rs
 
     WHERE c.status = 'approved'
+      AND u.is_active = 1
 
     ORDER BY c.created_at DESC;
   `;
@@ -188,9 +252,12 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
         c.geo_location.Lat AS geo_location_latitude,
         c.geo_location.Long AS geo_location_longitude,
         c.phone,
+        u.photo,
         ISNULL(rs.total_ratings, 0) AS total_ratings,
         CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
       FROM dbo.Clinics c
+      JOIN dbo.Users u
+        ON u.user_id = c.owner_user_id
       OUTER APPLY (
         SELECT
           COUNT(*) AS total_ratings,
@@ -199,7 +266,8 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
         WHERE r.clinic_id = c.clinic_id
       ) rs
       WHERE c.clinic_id = ${clinicId}
-        AND status = 'approved';
+        AND c.status = 'approved'
+        AND u.is_active = 1;
     `
   ).recordset[0];
 

@@ -16,6 +16,7 @@ const normalize = (value) => {
 };
 
 const NAME_REGEX = /^[\p{L}\s.'-]{2,150}$/u;
+const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
 
 exports.getMe = catchAsync(async (req, res, next) => {
@@ -99,6 +100,24 @@ exports.getMe = catchAsync(async (req, res, next) => {
       `
     ).recordset[0];
     attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
+  } else if (user_type === "clinic") {
+    profile = (
+      await sql.query`
+        SELECT
+          clinic_id,
+          name,
+          address,
+          location,
+          phone,
+          email,
+          status,
+          geo_location.Lat AS geo_location_latitude,
+          geo_location.Long AS geo_location_longitude
+        FROM dbo.Clinics
+        WHERE owner_user_id = ${user_id};
+      `
+    ).recordset[0];
+    attachGeoLocation(profile);
   } else if (user_type === "admin") {
     profile = (
       await sql.query`
@@ -342,6 +361,91 @@ exports.updateMe = catchAsync(async (req, res, next) => {
         ON c.clinic_id = s.clinic_id
       WHERE s.user_id = ${user_id};
     `;
+  } else if (user_type === "clinic") {
+    let { name, address, location, phone, email, geo_location } = data;
+    const clinicGeoLocation = normalizeGeoLocation(geo_location);
+
+    name = normalize(name);
+    if (name && (typeof name !== "string" || name.length > 150)) {
+      return next(new AppError("Invalid clinic name value", 400));
+    }
+
+    email = normalize(email);
+    if (email && !EMAIL_REGEX.test(email)) {
+      return next(new AppError("Invalid email format", 400));
+    }
+
+    if (email) {
+      const duplicate = await sql.query`
+        SELECT 1 AS duplicate_found
+        FROM dbo.Users
+        WHERE email = ${email}
+          AND user_id <> ${user_id}
+        UNION
+        SELECT 1 AS duplicate_found
+        FROM dbo.Clinics
+        WHERE email = ${email}
+          AND owner_user_id <> ${user_id};
+      `;
+
+      if (duplicate.recordset.length) {
+        return next(new AppError("Email is already in use", 409));
+      }
+    }
+
+    updateProfile = async () => {
+      if (email) {
+        await sql.query`
+          UPDATE dbo.Users
+          SET email = ${email}
+          WHERE user_id = ${user_id};
+        `;
+      }
+
+      const result = await sql.query`
+        UPDATE dbo.Clinics
+        SET
+          name = COALESCE(CAST(${name} AS NVARCHAR(150)), name),
+          address = COALESCE(CAST(${normalize(address)} AS NVARCHAR(255)), address),
+          location = COALESCE(CAST(${normalize(location)} AS NVARCHAR(150)), location),
+          phone = COALESCE(${normalize(phone)}, phone),
+          email = COALESCE(${email}, email)
+        WHERE owner_user_id = ${user_id};
+      `;
+
+      if (clinicGeoLocation !== undefined && result.rowsAffected[0] > 0) {
+        if (clinicGeoLocation) {
+          await sql.query`
+            UPDATE dbo.Clinics
+            SET geo_location = geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326)
+            WHERE owner_user_id = ${user_id};
+          `;
+        } else {
+          await sql.query`
+            UPDATE dbo.Clinics
+            SET geo_location = NULL
+            WHERE owner_user_id = ${user_id};
+          `;
+        }
+      }
+
+      return result;
+    };
+
+    selectProfile = () => sql.query`
+      SELECT
+        clinic_id,
+        name,
+        address,
+        location,
+        phone,
+        email,
+        status,
+        geo_location.Lat AS geo_location_latitude,
+        geo_location.Long AS geo_location_longitude
+      FROM dbo.Clinics
+      WHERE owner_user_id = ${user_id};
+    `;
   } else if (user_type === "admin") {
     let { full_name } = data;
     full_name = normalize(full_name);
@@ -379,7 +483,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   }
 
   const profile = selectProfile ? (await selectProfile()).recordset[0] : null;
-  if (user_type === "doctor") {
+  if (user_type === "doctor" || user_type === "clinic") {
     attachGeoLocation(profile);
   } else if (user_type === "staff") {
     attachGeoLocation(profile, { targetKey: "clinic_geo_location" });

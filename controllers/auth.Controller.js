@@ -92,13 +92,26 @@ const sendSignupWelcomeEmail = async ({ email, profile }) => {
 };
 
 exports.signup = catchAsync(async (req, res, next) => {
-  const { email, password, user_type, profile } = req.body;
+  const { email, password, user_type, profile, photo } = req.body;
 
   const exists = await sql.query`
     SELECT user_id FROM dbo.Users WHERE email = ${email};
   `;
   if (exists.recordset.length) {
     return next(new AppError("Email is already in use", 409));
+  }
+
+  if (user_type === "clinic") {
+    const clinicExists = await sql.query`
+      SELECT clinic_id
+      FROM dbo.Clinics
+      WHERE name = ${profile.name}
+        OR email = ${profile.email || email};
+    `;
+
+    if (clinicExists.recordset.length) {
+      return next(new AppError("Clinic name or email is already in use", 409));
+    }
   }
 
   const hashedPassword = await bcrypt.hash(password, 12);
@@ -110,10 +123,12 @@ exports.signup = catchAsync(async (req, res, next) => {
     await transaction.begin();
     transactionStarted = true;
 
+    const accountPhoto = photo || profile?.photo || null;
+
     const userResult = await transaction.request().query`
-      INSERT INTO dbo.Users (email, password, user_type)
+      INSERT INTO dbo.Users (email, password, user_type, photo)
       OUTPUT INSERTED.user_id, INSERTED.user_type
-      VALUES (${email}, ${hashedPassword}, ${user_type});
+      VALUES (${email}, ${hashedPassword}, ${user_type}, ${accountPhoto});
     `;
 
     user = userResult.recordset[0];
@@ -184,6 +199,53 @@ exports.signup = catchAsync(async (req, res, next) => {
           user_id: admin.user_id,
           title: "طلب توثيق طبيب",
           message: `يوجد حساب طبيب جديد باسم "${full_name}" بانتظار التوثيق.`,
+        });
+      }
+    }
+    if (user_type === "clinic") {
+      const {
+        name,
+        address,
+        location,
+        phone,
+        email: clinic_email,
+        geo_location,
+      } = profile;
+      const clinicGeoLocation = normalizeGeoLocation(
+        geo_location,
+        "profile.geo_location",
+      );
+      const contactEmail = clinic_email || email;
+
+      if (clinicGeoLocation) {
+        await transaction.request().query`
+          INSERT INTO dbo.Clinics
+            (owner_user_id, name, address, location, phone, email, status, geo_location)
+          VALUES
+            (${user.user_id}, ${name}, ${address || null}, ${location},
+             ${phone || null}, ${contactEmail}, 'pending',
+             geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
+        `;
+      } else {
+        await transaction.request().query`
+          INSERT INTO dbo.Clinics
+            (owner_user_id, name, address, location, phone, email, status, geo_location)
+          VALUES
+            (${user.user_id}, ${name}, ${address || null}, ${location},
+             ${phone || null}, ${contactEmail}, 'pending',
+             CAST(NULL AS GEOGRAPHY));
+        `;
+      }
+
+      const admins = await transaction.request().query`
+        SELECT user_id FROM dbo.Admins;
+      `;
+
+      for (const admin of admins.recordset) {
+        await createNotification({
+          user_id: admin.user_id,
+          title: "Ø·Ù„Ø¨ Ø§Ø¹ØªÙ…Ø§Ø¯ Ø¹ÙŠØ§Ø¯Ø©",
+          message: `ØªÙ… Ø¥Ø±Ø³Ø§Ù„ Ø·Ù„Ø¨ Ø¹ÙŠØ§Ø¯Ø© Ø¨Ø§Ø³Ù… "${name}" ÙˆÙ‡Ùˆ Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©.`,
         });
       }
     }
@@ -343,26 +405,6 @@ exports.login = catchAsync(async (req, res, next) => {
 
     attachGeoLocation(profile);
 
-    const clinic = (
-      await sql.query`
-        SELECT
-          clinic_id,
-          name,
-          address,
-          location,
-          phone,
-          email,
-          status,
-          geo_location.Lat AS geo_location_latitude,
-          geo_location.Long AS geo_location_longitude
-        FROM dbo.Clinics
-        WHERE owner_user_id = ${user.user_id};
-      `
-    ).recordset[0];
-
-    if (clinic && profile) {
-      profile.clinic = attachGeoLocation(clinic);
-    }
   }
 
   if (user.user_type === "staff") {
@@ -391,6 +433,27 @@ exports.login = catchAsync(async (req, res, next) => {
     ).recordset[0];
 
     attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
+  }
+
+  if (user.user_type === "clinic") {
+    profile = (
+      await sql.query`
+        SELECT
+          clinic_id,
+          name,
+          address,
+          location,
+          phone,
+          email,
+          status,
+          geo_location.Lat AS geo_location_latitude,
+          geo_location.Long AS geo_location_longitude
+        FROM dbo.Clinics
+        WHERE owner_user_id = ${user.user_id};
+      `
+    ).recordset[0];
+
+    attachGeoLocation(profile);
   }
 
   if (user.user_type === "admin") {

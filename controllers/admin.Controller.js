@@ -447,10 +447,6 @@ exports.getVerifiedDoctors = catchAsync(async (req, res) => {
     JOIN dbo.Users u
       ON d.user_id = u.user_id
 
-    LEFT JOIN dbo.Clinics c
-      ON c.owner_user_id = d.user_id
-     AND c.status = 'approved'
-
     OUTER APPLY (
       SELECT
         COUNT(*) AS total_bookings,
@@ -470,8 +466,6 @@ exports.getVerifiedDoctors = catchAsync(async (req, res) => {
 
     WHERE
       d.is_verified = 1
-      AND c.clinic_id IS NULL
-
     ORDER BY
       ISNULL(bs.total_bookings, 0) DESC,
       u.created_at DESC;

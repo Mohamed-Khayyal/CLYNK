@@ -10,13 +10,16 @@ const {
 } = require("../controllers/clinic.Controller");
 
 const { protect, restrictTo } = require("../middlewares/auth");
-const { isVerifiedDoctor } = require("../middlewares/isVerifiedDoctor");
 const { isClinicOwner } = require("../middlewares/isClinicOwner");
+const {
+  uploadSingle,
+  uploadToCloudinary,
+} = require("../middlewares/upload.Cloudinary");
 
-router.post("/", protect, restrictTo("doctor"), isVerifiedDoctor, createClinic);
+router.post("/", uploadSingle("photo"), uploadToCloudinary, createClinic);
 router.get("/", getPublicClinics);
 router.get("/:clinicId/staff", getActiveClinicStaff);
 router.get("/:id/profile", getClinicProfile);
-router.get("/my-stats", protect, isClinicOwner, getClinicStats);
+router.get("/my-stats", protect, restrictTo("clinic"), isClinicOwner, getClinicStats);
 
 module.exports = router;

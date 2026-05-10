@@ -5,6 +5,10 @@ const catchAsync = require("../utilts/catch.Async");
 exports.isClinicOwner = catchAsync(async (req, res, next) => {
   const ownerUserId = req.user.user_id;
 
+  if (req.user.user_type !== "clinic") {
+    return next(new AppError("Only clinic accounts can access this resource", 403));
+  }
+
   const clinicResult = await sql.query`
     SELECT
       clinic_id,

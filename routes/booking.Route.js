@@ -23,8 +23,8 @@ router.get(
 router.get(
   "/clinic-bookings",
   protect,
+  restrictTo("clinic"),
   isClinicOwner,
-  restrictTo("doctor"),
   getClinicBookings
 );
 
@@ -33,7 +33,7 @@ router.get("/slots", getAvailableSlots);
 router.patch(
   "/clinic-bookings/:id/cancel",
   protect,
-  restrictTo("doctor"),
+  restrictTo("clinic"),
   isClinicOwner,
   cancelClinicBooking
 );

@@ -3,7 +3,7 @@ const { normalizeGeoLocation } = require("../utilts/geo.Location");
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
-const ALLOWED_SIGNUP_ROLES = ["patient", "doctor", "staff"];
+const ALLOWED_SIGNUP_ROLES = ["patient", "doctor", "staff", "clinic"];
 const STAFF_ROLES = ["doctor", "nurse", "receptionist"];
 
 exports.signupValidation = (req, res, next) => {
@@ -153,6 +153,24 @@ exports.signupValidation = (req, res, next) => {
           ),
         );
       }
+    }
+  }
+
+  if (user_type === "clinic") {
+    const { name, location, email: clinic_email, geo_location } = profile;
+
+    if (!name || !location) {
+      return next(new AppError("Clinic fields name and location are required", 400));
+    }
+
+    if (clinic_email && !EMAIL_REGEX.test(clinic_email)) {
+      return next(new AppError("Invalid clinic email format", 400));
+    }
+
+    try {
+      normalizeGeoLocation(geo_location, "profile.geo_location");
+    } catch (err) {
+      return next(err);
     }
   }
 

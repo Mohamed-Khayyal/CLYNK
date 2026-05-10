@@ -45,10 +45,6 @@ exports.getDoctors = catchAsync(async (req, res) => {
     JOIN dbo.Users u
       ON u.user_id = d.user_id
 
-    LEFT JOIN dbo.Clinics c
-      ON c.owner_user_id = d.user_id
-     AND c.status = 'approved'
-
     OUTER APPLY (
       SELECT
         COUNT(*) AS total_bookings,
@@ -68,7 +64,6 @@ exports.getDoctors = catchAsync(async (req, res) => {
 
     WHERE
       d.is_verified = 1
-      AND c.clinic_id IS NULL
       ${specialistFilter}
 
     ORDER BY
@@ -120,10 +115,6 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
     JOIN dbo.Users u
       ON u.user_id = d.user_id
 
-    LEFT JOIN dbo.Clinics c
-      ON c.owner_user_id = d.user_id
-     AND c.status = 'approved'
-
     OUTER APPLY (
       SELECT
         COUNT(*) AS total_bookings,
@@ -144,7 +135,6 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
     WHERE
       d.doctor_id = ${doctor_id}
       AND d.is_verified = 1
-      AND c.clinic_id IS NULL
   `;
 
   if (!doctor.recordset.length) {
@@ -300,9 +290,6 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
       FROM dbo.Doctors d
       JOIN dbo.Users u
         ON u.user_id = d.user_id
-      LEFT JOIN dbo.Clinics c
-        ON c.owner_user_id = d.user_id
-       AND c.status = 'approved'
       OUTER APPLY (
         SELECT
           COUNT(*) AS total_bookings,
@@ -320,7 +307,6 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
       ) rs
       WHERE d.is_verified = 1
         AND u.is_active = 1
-        AND c.clinic_id IS NULL
         ${doctorSpecialistFilter}
 
       UNION ALL

@@ -3,7 +3,7 @@
 Backend API for a clinic and medical booking platform built with Node.js, Express, SQL Server, JWT authentication, and Cloudinary uploads.
 
 This project supports:
-- User authentication with `patient`, `doctor`, `staff`, and `admin` roles
+- User authentication with `patient`, `doctor`, `staff`, `clinic`, and `admin` roles
 - Doctor and clinic discovery
 - Clinic creation and approval workflows
 - Staff creation and verification workflows
@@ -69,7 +69,7 @@ This project supports:
 
 ### Authentication and roles
 
-- Signup supports `patient`, `doctor`, and `staff`
+- Signup supports `patient`, `doctor`, `staff`, and `clinic`
 - Login returns role-specific profile data
 - Access and refresh tokens are signed with JWT
 - Tokens are stored in HTTP-only cookies: `jwt` and `refresh_token`
@@ -79,7 +79,7 @@ This project supports:
 
 ### Clinics and staff
 
-- Verified doctors can create clinics
+- Clinics are first-class accounts with their own `clinic` role, password, and optional image
 - Clinics start with `pending` status and must be approved or rejected by an admin
 - Clinic owners can create staff accounts for their clinic
 - Staff can be `doctor`, `nurse`, or `receptionist`
@@ -242,6 +242,8 @@ If you are starting from scratch and `create_users.sql` already includes the lat
 - `GET /api/clinic/:id/profile`
 - `GET /api/clinic/my-stats`
 
+`POST /api/clinic` creates a clinic account with its own password and optional `photo` image upload.
+
 ### Doctors
 
 - `GET /api/doctors`
@@ -311,8 +313,8 @@ All admin routes require an authenticated user with the `admin` role.
 - `middlewares/upload.Cloudinary.js`: memory uploads plus Cloudinary transfer
 - `middlewares/audit.Logger.js`: request audit logging
 - `middlewares/error.Handler.js`: centralized error responses
-- `middlewares/isClinicOwner.js`: ensures the current doctor owns a clinic
-- `middlewares/isVerifiedDoctor.js`: ensures the doctor is verified before clinic creation
+- `middlewares/isClinicOwner.js`: ensures the current clinic account owns an approved clinic
+- `middlewares/isVerifiedDoctor.js`: ensures a doctor is verified before doctor-only features
 
 ## Logging
 

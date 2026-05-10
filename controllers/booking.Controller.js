@@ -41,12 +41,8 @@ exports.createBooking = catchAsync(async (req, res, next) => {
           d.user_id,
           d.work_days,
           CONVERT(VARCHAR(5), d.work_from,108) AS work_from,
-          CONVERT(VARCHAR(5), d.work_to,108)   AS work_to,
-          c.clinic_id
+          CONVERT(VARCHAR(5), d.work_to,108)   AS work_to
         FROM dbo.Doctors d
-        LEFT JOIN dbo.Clinics c
-          ON c.owner_user_id = d.user_id
-         AND c.status = 'approved'
         WHERE d.doctor_id = ${doctor_id}
           AND d.is_verified = 1;
       `
@@ -56,14 +52,6 @@ exports.createBooking = catchAsync(async (req, res, next) => {
       return next(new AppError("Doctor is not available", 404));
     }
 
-    if (target.clinic_id) {
-      return next(
-        new AppError(
-          "This doctor owns a clinic. Please book through clinic staff.",
-          400,
-        ),
-      );
-    }
   }
 
   if (staff_id) {
@@ -270,13 +258,11 @@ exports.getMyBookings = catchAsync(async (req, res, next) => {
 
 exports.getClinicBookings = catchAsync(async (req, res, next) => {
   const clinic_id = req.clinic.clinic_id;
-  const owner_user_id = req.user.user_id;
   const { date } = req.query;
 
   let dateFilter = "";
   const request = new sql.Request();
   request.input("clinicId", clinic_id);
-  request.input("ownerUserId", owner_user_id);
 
   if (date) {
     dateFilter = "AND b.booking_date = @bookingDate";
@@ -297,7 +283,7 @@ exports.getClinicBookings = catchAsync(async (req, res, next) => {
       p.full_name AS patient_name,
       p.phone     AS patient_phone,
 
-      COALESCE(s.full_name, d.full_name) AS doctor_name,
+      s.full_name AS doctor_name,
 
       c.name AS clinic_name
 
@@ -310,20 +296,10 @@ exports.getClinicBookings = catchAsync(async (req, res, next) => {
       ON s.staff_id = b.staff_id
      AND s.role_title = 'doctor'
 
-    LEFT JOIN dbo.Doctors d
-      ON d.doctor_id = b.doctor_id
-
     LEFT JOIN dbo.Clinics c
       ON c.clinic_id = s.clinic_id
 
-    WHERE
-      (
-        s.clinic_id = @clinicId
-
-        OR
-
-        d.user_id = @ownerUserId
-      )
+    WHERE s.clinic_id = @clinicId
       ${dateFilter}
 
     ORDER BY b.booking_date, b.booking_from;
@@ -354,12 +330,8 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
       await sql.query`
         SELECT work_days,
                CONVERT(VARCHAR(5), work_from,108) AS work_from,
-               CONVERT(VARCHAR(5), work_to,108)   AS work_to,
-               c.clinic_id
+               CONVERT(VARCHAR(5), work_to,108)   AS work_to
         FROM dbo.Doctors d
-        LEFT JOIN dbo.Clinics c
-          ON c.owner_user_id = d.user_id
-         AND c.status = 'approved'
         WHERE doctor_id = ${doctor_id}
           AND is_verified = 1;
       `
@@ -379,15 +351,6 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
   }
 
   if (!target) return next(new AppError("Doctor is not available", 404));
-
-  if (doctor_id && target.clinic_id) {
-    return next(
-      new AppError(
-        "This doctor owns a clinic. Please book through clinic staff.",
-        400,
-      ),
-    );
-  }
 
   const day = new Date(booking_date)
     .toLocaleDateString("en-US", { weekday: "short" })

@@ -81,28 +81,9 @@ const hasConfirmedClinicBooking = async (patientUserId, clinicId) => {
     FROM dbo.Bookings b
     LEFT JOIN dbo.Staff s
       ON s.staff_id = b.staff_id
-    LEFT JOIN dbo.Doctors d
-      ON d.doctor_id = b.doctor_id
-    LEFT JOIN dbo.Clinics c_owner
-      ON c_owner.owner_user_id = d.user_id
-     AND c_owner.status = 'approved'
     WHERE b.patient_user_id = ${patientUserId}
       AND b.status = 'confirmed'
-      AND (
-        s.clinic_id = ${clinicId}
-        OR c_owner.clinic_id = ${clinicId}
-      );
-  `;
-
-  return result.recordset.length > 0;
-};
-
-const doctorOwnsApprovedClinic = async (doctorUserId) => {
-  const result = await sql.query`
-    SELECT TOP 1 clinic_id
-    FROM dbo.Clinics
-    WHERE owner_user_id = ${doctorUserId}
-      AND status = 'approved';
+      AND s.clinic_id = ${clinicId};
   `;
 
   return result.recordset.length > 0;
@@ -207,16 +188,6 @@ exports.rateDoctor = catchAsync(async (req, res, next) => {
   const doctor = await getDoctor(doctorId);
   if (!doctor) {
     return next(new AppError("Doctor not found", 404));
-  }
-
-  const ownsClinic = await doctorOwnsApprovedClinic(doctor.user_id);
-  if (ownsClinic) {
-    return next(
-      new AppError(
-        "This doctor owns a clinic. Please rate the clinic instead.",
-        400,
-      ),
-    );
   }
 
   const { rating, comment } = parseRatingBody(req.body);
