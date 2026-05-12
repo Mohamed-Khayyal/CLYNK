@@ -6,6 +6,17 @@ const { createNotification } = require("../utilts/notification");
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 
+const getAdminUserId = (req, next) => {
+  const adminUserId = req.user?.user_id;
+
+  if (!adminUserId) {
+    next(new AppError("Admin authentication is required", 401));
+    return null;
+  }
+
+  return adminUserId;
+};
+
 exports.createAdmin = catchAsync(async (req, res, next) => {
   const { email, password, full_name } = req.body;
 
@@ -249,7 +260,11 @@ exports.getApprovedClinics = catchAsync(async (req, res) => {
 
 exports.approveClinic = catchAsync(async (req, res, next) => {
   const clinicId = Number(req.params.id);
-  const adminUserId = req.user.user_id;
+  const adminUserId = getAdminUserId(req, next);
+
+  if (!adminUserId) {
+    return;
+  }
 
   if (!clinicId) {
     return next(new AppError("Invalid clinic id", 400));
@@ -306,7 +321,11 @@ exports.approveClinic = catchAsync(async (req, res, next) => {
 
 exports.rejectClinic = catchAsync(async (req, res, next) => {
   const clinicId = Number(req.params.id);
-  const adminUserId = req.user.user_id;
+  const adminUserId = getAdminUserId(req, next);
+
+  if (!adminUserId) {
+    return;
+  }
 
   if (!clinicId) {
     return next(new AppError("Invalid clinic id", 400));
@@ -528,7 +547,11 @@ exports.getUnverifiedDoctors = catchAsync(async (req, res) => {
 
 exports.verifyDoctor = catchAsync(async (req, res, next) => {
   const doctorId = Number(req.params.id);
-  const adminUserId = req.user.user_id;
+  const adminUserId = getAdminUserId(req, next);
+
+  if (!adminUserId) {
+    return;
+  }
 
   if (!doctorId) {
     return next(new AppError("Invalid doctor id", 400));
@@ -580,7 +603,11 @@ exports.verifyDoctor = catchAsync(async (req, res, next) => {
 
 exports.unverifyDoctor = catchAsync(async (req, res, next) => {
   const doctorId = Number(req.params.id);
-  const adminUserId = req.user.user_id;
+  const adminUserId = getAdminUserId(req, next);
+
+  if (!adminUserId) {
+    return;
+  }
 
   if (!doctorId) {
     return next(new AppError("Invalid doctor id", 400));
