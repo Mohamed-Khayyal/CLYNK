@@ -353,16 +353,16 @@ exports.rejectClinic = catchAsync(async (req, res, next) => {
     return next(new AppError("Clinic not found", 404));
   }
 
-  if (clinic.status !== "pending") {
-    return next(
-      new AppError("Only clinics with pending status can be rejected", 400),
-    );
-  }
+  // if (clinic.status !== "pending") {
+  //   return next(
+  //     new AppError("Only clinics with pending status can be rejected", 400),
+  //   );
+  // }
 
   await sql.query`
     UPDATE dbo.Clinics
     SET
-      status = 'rejected',
+      status = 'pending',
       verified_by_admin_id = ${admin.admin_id},
       verified_at = SYSDATETIME()
     WHERE clinic_id = ${clinicId};
@@ -384,6 +384,7 @@ exports.getAllDoctors = catchAsync(async (req, res) => {
   const result = await sql.query`
     SELECT
       d.doctor_id,
+      phone,
       d.user_id,
       u.email,
       d.full_name,
