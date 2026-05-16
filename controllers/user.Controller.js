@@ -497,69 +497,64 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.getAllDoctorsAndStaff = catchAsync(async (req, res) => {
-  const doctors = await sql.query(`
-      SELECT
-          d.doctor_id AS id,
-          d.full_name,
-          'doctor' AS type,
-          d.specialist,
-          d.consultation_price,
-          d.years_of_experience,
-          d.work_days,
-          CONVERT(VARCHAR(5), d.work_from,108) AS work_from,
-          CONVERT(VARCHAR(5), d.work_to,108) AS work_to,
-          d.is_verified,
-          u.email,
-          u.photo
-      FROM Doctors d
-      JOIN Users u
-          ON d.user_id = u.user_id
-      WHERE d.is_verified = 1
+exports.userStats = catchAsync(async (req, res) => {
+
+  const doctorsQuery = sql.query(`
+      SELECT COUNT(*) AS count
+      FROM Doctors
+      WHERE is_verified = 1
   `);
 
-  const staff = await sql.query(`
-      SELECT
-          s.staff_id AS id,
-          s.full_name,
-          'staff' AS type,
-          s.role_title,
-          s.specialist,
-          s.consultation_price,
-          s.work_days,
-          CONVERT(VARCHAR(5), s.work_from,108) AS work_from,
-          CONVERT(VARCHAR(5), s.work_to,108) AS work_to,
-          s.is_verified,
-          c.name AS clinic_name,
-          u.email,
-          u.photo
-      FROM Staff s
-      JOIN Users u
-          ON s.user_id = u.user_id
-      LEFT JOIN Clinics c
-          ON s.clinic_id = c.clinic_id
-      WHERE s.is_verified = 1
+  const staffQuery = sql.query(`
+      SELECT COUNT(*) AS count
+      FROM Staff
+      WHERE is_verified = 1
   `);
 
-  const all = [
-    ...doctors.recordset,
-    ...staff.recordset
-  ];
+  const clinicsQuery = sql.query(`
+      SELECT COUNT(*) AS count
+      FROM Clinics
+      WHERE status = 'approved'
+  `);
 
-  res.status(200).json({
-    status: "success",
-    results: all.length,
-  });
-});
-
-exports.getAllPatients = catchAsync(async (req, res) => {
-  const patients = await sql.query(`
-      SELECT *
+  const patientsQuery = sql.query(`
+      SELECT COUNT(*) AS count
       FROM Patients
   `);
 
+  const [
+    doctors,
+    staff,
+    clinics,
+    patients
+  ] = await Promise.all([
+    doctorsQuery,
+    staffQuery,
+    clinicsQuery,
+    patientsQuery
+  ]);
+
+  const totalDoctors =
+    doctors.recordset[0].count;
+
+  const totalStaff =
+    staff.recordset[0].count;
+
+  const totalClinics =
+    clinics.recordset[0].count;
+
+  const totalPatients =
+    patients.recordset[0].count;
+
   res.status(200).json({
     status: "success",
-    results: patients.recordset.length,
+    data: {
+      totalDoctors,
+      totalStaff,
+      totalClinics,
+      totalPatients,
+      totalMedicalUsers: totalDoctors + totalStaff
+    }
   });
+
 });

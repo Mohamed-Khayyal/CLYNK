@@ -19,13 +19,8 @@ router.patch(
 );
 
 router.get(
-  "/doctors-staff",
-  userController.getAllDoctorsAndStaff
-);
-
-router.get(
-  "/patients",
-  userController.getAllPatients
+  "/stats",
+  userController.userStats
 );
 
 module.exports = router;
