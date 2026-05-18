@@ -91,6 +91,11 @@ exports.getMe = catchAsync(async (req, res, next) => {
           s.years_of_experience,
           s.bio,
           s.gender,
+          s.specialist,
+          s.work_days,
+          CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
+          CONVERT(VARCHAR(5), s.work_to, 108) AS work_to,
+          s.consultation_price,
           s.phone,
           s.location,
           s.geo_location.Lat AS geo_location_latitude,
@@ -116,6 +121,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
         WHERE s.user_id = ${user_id};
       `
     ).recordset[0];
+    attachGeoLocation(profile);
     attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
   } else if (user_type === "clinic") {
     profile = (
@@ -565,10 +571,8 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   }
 
   const profile = selectProfile ? (await selectProfile()).recordset[0] : null;
-  if (user_type === "doctor" || user_type === "clinic") {
+  if (user_type === "doctor" || user_type === "clinic" || user_type === "staff") {
     attachGeoLocation(profile);
-  } else if (user_type === "staff") {
-    attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
   }
 
   res.status(200).json({
