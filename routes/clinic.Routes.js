@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   createClinic,
   getPublicClinics,
+  getBestClinics,
   getActiveClinicStaff,
   getClinicProfile,
   getClinicStats,
@@ -18,6 +19,7 @@ const {
 
 router.post("/", uploadSingle("photo"), uploadToCloudinary, createClinic);
 router.get("/", getPublicClinics);
+router.get("/best", getBestClinics);
 router.get("/:clinicId/staff", getActiveClinicStaff);
 router.get("/:id/profile", getClinicProfile);
 router.get("/my-stats", protect, restrictTo("clinic"), isClinicOwner, getClinicStats);

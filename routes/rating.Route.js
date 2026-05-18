@@ -10,7 +10,10 @@ router.post("/doctor/:doctorId", ratingController.rateDoctor);
 
 router.post("/clinic/:clinicId", ratingController.rateClinic);
 
+router.post("/staff/:staffId", ratingController.rateStaff);
+
 router.get("/doctor/:doctorId", ratingController.getDoctorRatings);
 router.get("/clinic/:clinicId", ratingController.getClinicRatings);
+router.get("/staff/:staffId", ratingController.getStaffRatings);
 
 module.exports = router;

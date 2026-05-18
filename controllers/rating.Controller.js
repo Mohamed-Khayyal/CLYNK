@@ -63,6 +63,17 @@ const getClinic = async (clinicId) => {
   ).recordset[0];
 };
 
+const getStaff = async (staffId) => {
+  return (
+    await sql.query`
+      SELECT staff_id, user_id
+      FROM dbo.Staff
+      WHERE staff_id = ${staffId}
+        AND is_verified = 1;
+    `
+  ).recordset[0];
+};
+
 const hasConfirmedDoctorBooking = async (patientUserId, doctorId) => {
   const result = await sql.query`
     SELECT TOP 1 booking_id
@@ -84,6 +95,18 @@ const hasConfirmedClinicBooking = async (patientUserId, clinicId) => {
     WHERE b.patient_user_id = ${patientUserId}
       AND b.status = 'confirmed'
       AND s.clinic_id = ${clinicId};
+  `;
+
+  return result.recordset.length > 0;
+};
+
+const hasConfirmedStaffBooking = async (patientUserId, staffId) => {
+  const result = await sql.query`
+    SELECT TOP 1 booking_id
+    FROM dbo.Bookings
+    WHERE patient_user_id = ${patientUserId}
+      AND staff_id = ${staffId}
+      AND status = 'confirmed';
   `;
 
   return result.recordset.length > 0;
@@ -161,6 +184,46 @@ const upsertClinicRating = async (patientUserId, clinicId, rating, comment) => {
     OUTPUT INSERTED.rating_id
     VALUES
       (${patientUserId}, NULL, ${clinicId}, ${rating}, ${comment});
+  `;
+
+  return {
+    action: "created",
+    rating_id: created.recordset[0].rating_id,
+  };
+};
+
+const upsertStaffRating = async (patientUserId, staffId, rating, comment) => {
+  const existing = await sql.query`
+    SELECT rating_id
+    FROM dbo.Ratings
+    WHERE patient_user_id = ${patientUserId}
+      AND staff_id = ${staffId};
+  `;
+
+  if (existing.recordset.length) {
+    const updated = await sql.query`
+      UPDATE dbo.Ratings
+      SET
+        rating = ${rating},
+        comment = ${comment},
+        updated_at = SYSDATETIME()
+      OUTPUT INSERTED.rating_id
+      WHERE patient_user_id = ${patientUserId}
+        AND staff_id = ${staffId};
+    `;
+
+    return {
+      action: "updated",
+      rating_id: updated.recordset[0].rating_id,
+    };
+  }
+
+  const created = await sql.query`
+    INSERT INTO dbo.Ratings
+      (patient_user_id, doctor_id, clinic_id, staff_id, rating, comment)
+    OUTPUT INSERTED.rating_id
+    VALUES
+      (${patientUserId}, NULL, NULL, ${staffId}, ${rating}, ${comment});
   `;
 
   return {
@@ -265,6 +328,49 @@ exports.rateClinic = catchAsync(async (req, res, next) => {
   });
 });
 
+exports.rateStaff = catchAsync(async (req, res, next) => {
+  const staffId = parseId(req.params.staffId);
+  if (!staffId) {
+    return next(new AppError("Invalid staff id", 400));
+  }
+
+  const staff = await getStaff(staffId);
+  if (!staff) {
+    return next(new AppError("Staff member not found", 404));
+  }
+
+  const { rating, comment } = parseRatingBody(req.body);
+  const patientUserId = req.user.user_id;
+
+  const booked = await hasConfirmedStaffBooking(patientUserId, staffId);
+  if (!booked) {
+    return next(
+      new AppError("You can rate only staff you previously booked with", 403),
+    );
+  }
+
+  const result = await upsertStaffRating(
+    patientUserId,
+    staffId,
+    rating,
+    comment,
+  );
+
+  res.status(result.action === "created" ? 201 : 200).json({
+    status: "success",
+    message:
+      result.action === "created"
+        ? "تم إنشاء تقييم الموظف"
+        : "تم تحديث تقييم الموظف",
+    rating: {
+      rating_id: result.rating_id,
+      staff_id: staffId,
+      rating,
+      comment,
+    },
+  });
+});
+
 exports.getDoctorRatings = catchAsync(async (req, res, next) => {
   const doctorId = parseId(req.params.doctorId);
   if (!doctorId) {
@@ -295,10 +401,13 @@ exports.getDoctorRatings = catchAsync(async (req, res, next) => {
       r.rating_id,
       r.rating,
       r.comment,
-      p.full_name AS patient_name
+      p.full_name AS patient_name,
+      u.photo AS patient_photo
     FROM dbo.Ratings r
     JOIN dbo.Patients p
       ON p.user_id = r.patient_user_id
+    JOIN dbo.Users u
+      ON u.user_id = r.patient_user_id
     WHERE r.doctor_id = ${doctorId}
     ORDER BY COALESCE(r.updated_at, r.created_at) DESC
     OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY;
@@ -349,11 +458,71 @@ exports.getClinicRatings = catchAsync(async (req, res, next) => {
       r.rating_id,
       r.rating,
       r.comment,
-      p.full_name AS patient_name
+      p.full_name AS patient_name,
+      u.photo AS patient_photo
     FROM dbo.Ratings r
     JOIN dbo.Patients p
       ON p.user_id = r.patient_user_id
+    JOIN dbo.Users u
+      ON u.user_id = r.patient_user_id
     WHERE r.clinic_id = ${clinicId}
+    ORDER BY COALESCE(r.updated_at, r.created_at) DESC
+    OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY;
+  `;
+
+  const summary = getSummary(summaryRow);
+
+  res.status(200).json({
+    status: "success",
+    summary,
+    pagination: {
+      page,
+      limit,
+      total_pages: Math.max(1, Math.ceil(summary.total_ratings / limit)),
+    },
+    results: ratings.recordset.length,
+    ratings: ratings.recordset,
+  });
+});
+
+exports.getStaffRatings = catchAsync(async (req, res, next) => {
+  const staffId = parseId(req.params.staffId);
+  if (!staffId) {
+    return next(new AppError("Invalid staff id", 400));
+  }
+
+  const staff = await getStaff(staffId);
+  if (!staff) {
+    return next(new AppError("Staff member not found", 404));
+  }
+
+  const { page, limit, offset } = parsePagination(req.query);
+
+  const summaryRow = (
+    await sql.query`
+      SELECT
+        COUNT(*) AS total_ratings,
+        CAST(
+          ISNULL(ROUND(AVG(CAST(r.rating AS FLOAT)), 1), 0) AS DECIMAL(3, 1)
+        ) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.staff_id = ${staffId};
+    `
+  ).recordset[0];
+
+  const ratings = await sql.query`
+    SELECT
+      r.rating_id,
+      r.rating,
+      r.comment,
+      p.full_name AS patient_name,
+      u.photo AS patient_photo
+    FROM dbo.Ratings r
+    JOIN dbo.Patients p
+      ON p.user_id = r.patient_user_id
+    JOIN dbo.Users u
+      ON u.user_id = r.patient_user_id
+    WHERE r.staff_id = ${staffId}
     ORDER BY COALESCE(r.updated_at, r.created_at) DESC
     OFFSET ${offset} ROWS FETCH NEXT ${limit} ROWS ONLY;
   `;

@@ -277,6 +277,8 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
       s.staff_id,
       s.user_id,
       s.full_name,
+      s.phone,
+      s.gender,
       s.role_title,
       s.specialist,
       s.work_days,
@@ -296,21 +298,11 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
       c.name AS clinic_name,
       c.location AS clinic_location,
       c.phone AS clinic_phone,
-
-
-      -------------------------
-      -- bookings
-      -------------------------
       ISNULL(bs.total_bookings,0)
       AS total_bookings,
 
       ISNULL(bs.total_patients,0)
       AS total_patients,
-
-
-      -------------------------
-      -- STAFF ratings
-      -------------------------
       ISNULL(rt.total_ratings,0)
       AS total_ratings,
 
@@ -318,6 +310,14 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
         ISNULL(rt.average_rating,0)
         AS DECIMAL(3,1)
       ) AS average_rating,
+
+      ISNULL(cr.total_ratings, 0)
+      AS clinic_total_ratings,
+
+      CAST(
+        ISNULL(cr.average_rating, 0)
+        AS DECIMAL(3,1)
+      ) AS clinic_average_rating,
 
 
       CAST(
@@ -339,10 +339,6 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
     JOIN dbo.Clinics c
       ON c.clinic_id=s.clinic_id
 
-
-    -------------------------
-    -- bookings stats
-    -------------------------
     OUTER APPLY(
       SELECT
         COUNT(*) total_bookings,
@@ -358,10 +354,6 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
         AND b.status='confirmed'
     ) bs
 
-
-    -------------------------
-    -- staff rating
-    -------------------------
     OUTER APPLY(
       SELECT
         COUNT(*) total_ratings,
@@ -376,6 +368,17 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
       WHERE r.staff_id=s.staff_id
 
     ) rt
+
+    OUTER APPLY(
+      SELECT
+        COUNT(*) total_ratings,
+        ROUND(
+          AVG(CAST(r.rating AS FLOAT)),
+          1
+        ) average_rating
+      FROM dbo.Ratings r
+      WHERE r.clinic_id = c.clinic_id
+    ) cr
 
 
     WHERE

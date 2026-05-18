@@ -11,6 +11,12 @@ const {
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 
+const parseLimit = (value, fallback = 5, max = 20) => {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit <= 0) return fallback;
+  return Math.min(limit, max);
+};
+
 exports.createClinic = catchAsync(async (req, res, next) => {
   const {
     name,
@@ -25,7 +31,10 @@ exports.createClinic = catchAsync(async (req, res, next) => {
 
   if (!name || !location || !email || !password) {
     return next(
-      new AppError("Clinic name, location, email, and password are required", 400),
+      new AppError(
+        "Clinic name, location, email, and password are required",
+        400,
+      ),
     );
   }
 
@@ -194,6 +203,62 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
   });
 });
 
+exports.getBestClinics = catchAsync(async (req, res) => {
+  const limit = parseLimit(req.query.limit);
+  const request = new sql.Request();
+  request.input("limit", sql.Int, limit);
+
+  const result = await request.query(`
+    SELECT TOP (@limit)
+      c.clinic_id,
+      c.name,
+      c.location,
+      c.geo_location.Lat AS geo_location_latitude,
+      c.geo_location.Long AS geo_location_longitude,
+      c.phone,
+      u.photo,
+      ISNULL(bs.total_bookings, 0) AS total_bookings,
+      ISNULL(rs.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
+
+    FROM dbo.Clinics c
+    JOIN dbo.Users u
+      ON u.user_id = c.owner_user_id
+
+    OUTER APPLY (
+      SELECT COUNT(*) AS total_bookings
+      FROM dbo.Bookings b
+      JOIN dbo.Staff s
+        ON s.staff_id = b.staff_id
+      WHERE s.clinic_id = c.clinic_id
+        AND b.status = 'confirmed'
+    ) bs
+
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.clinic_id = c.clinic_id
+    ) rs
+
+    WHERE c.status = 'approved'
+      AND u.is_active = 1
+
+    ORDER BY
+      average_rating DESC,
+      total_bookings DESC,
+      total_ratings DESC,
+      c.created_at DESC;
+  `);
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    clinics: attachGeoLocationToMany(result.recordset),
+  });
+});
+
 exports.getActiveClinicStaff = catchAsync(async (req, res, next) => {
   const clinicId = Number(req.params.clinicId);
 
@@ -281,12 +346,22 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
       s.full_name,
       s.specialist,
       s.work_days,
+      s.years_of_experience,
       CONVERT(VARCHAR(5), s.work_from,108) AS work_from,
       CONVERT(VARCHAR(5), s.work_to,108)   AS work_to,
       s.consultation_price,
-      u.photo
+      u.photo,
+      ISNULL(rt.total_ratings, 0) AS total_ratings,
+      CAST(ISNULL(rt.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
     FROM dbo.Staff s
     JOIN dbo.Users u ON u.user_id = s.user_id
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_ratings,
+        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
+      FROM dbo.Ratings r
+      WHERE r.staff_id = s.staff_id
+    ) rt
     WHERE s.clinic_id = ${clinicId}
       AND s.role_title = 'doctor'
       AND s.is_verified = 1;
