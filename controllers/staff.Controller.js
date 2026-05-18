@@ -277,6 +277,7 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
       s.staff_id,
       s.user_id,
       s.full_name,
+      s.bio,
       s.phone,
       s.gender,
       s.role_title,
