@@ -33,12 +33,6 @@ router.patch(
   resetPasswordValidation,
   authController.resetPassword,
 );
-router.post(
-  "/reset-password/:token",
-  authLimiter,
-  resetPasswordValidation,
-  authController.resetPassword,
-);
 
 router.post(
   "/refresh",
