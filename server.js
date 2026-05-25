@@ -34,6 +34,22 @@ process.on("uncaughtException", (err) => {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+const getTrustProxySetting = () => {
+  const value = process.env.TRUST_PROXY;
+  if (!value) return "loopback, linklocal, uniquelocal";
+
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes"].includes(normalized)) return true;
+  if (["false", "0", "no"].includes(normalized)) return false;
+
+  const numericValue = Number(value);
+  if (Number.isInteger(numericValue) && numericValue >= 0) return numericValue;
+
+  return value;
+};
+
+app.set("trust proxy", getTrustProxySetting());
+
 app.use(corsHandler);
 app.use(cookieParser());
 app.use(globalLimiter);

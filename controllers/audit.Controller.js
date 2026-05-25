@@ -4,11 +4,12 @@ const { getAuditLogs } = require("../utilts/audit.Logger");
 
 const ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_LEVELS = new Set(["info", "error"]);
+const ALLOWED_ROLES = new Set(["patient", "doctor", "staff", "clinic", "admin", "guest"]);
 
 exports.listAuditLogs = catchAsync(async (req, res, next) => {
   const rawLimit = Number(req.query.limit);
   const limit =
-    Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+    Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 5000) : 1000;
 
   const rawActorId = req.query.actor_user_id;
   let actor_user_id;
@@ -40,6 +41,11 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
       ? req.query.path_contains.trim()
       : undefined;
 
+  const location_contains =
+    typeof req.query.location_contains === "string" && req.query.location_contains.trim()
+      ? req.query.location_contains.trim()
+      : undefined;
+
   let level;
   if (req.query.level !== undefined) {
     level = String(req.query.level).toLowerCase().trim();
@@ -48,13 +54,28 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
     }
   }
 
+  let actor_role;
+  if (req.query.actor_role !== undefined) {
+    actor_role = String(req.query.actor_role).toLowerCase().trim();
+    if (!ALLOWED_ROLES.has(actor_role)) {
+      return next(
+        new AppError(
+          "actor_role must be one of patient, doctor, staff, clinic, admin, guest",
+          400,
+        ),
+      );
+    }
+  }
+
   const logs = getAuditLogs({
     limit,
     level,
     actor_user_id,
+    actor_role,
     method,
     status_code,
     path_contains,
+    location_contains,
   });
 
   res.status(200).json({
@@ -65,9 +86,9 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
 });
 
 exports.getAuditStats = catchAsync(async (req, res) => {
-  const totalLogs = getAuditLogs().length;
-  const totalInfoLogs = getAuditLogs({ level: "info" }).length;
-  const totalErrorLogs = getAuditLogs({ level: "error" }).length;
+  const totalLogs = getAuditLogs({ limit: 100000 }).length;
+  const totalInfoLogs = getAuditLogs({ level: "info", limit: 100000 }).length;
+  const totalErrorLogs = getAuditLogs({ level: "error", limit: 100000 }).length;
   const totalSuccessLogs = totalLogs - totalErrorLogs;
   const totalFailedLogs = totalLogs - totalSuccessLogs;
 

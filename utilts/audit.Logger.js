@@ -120,12 +120,14 @@ const parseLogLines = (text) => {
 };
 
 const getAuditLogs = ({
-  limit = 100,
+  limit = 1000,
   level,
   actor_user_id,
+  actor_role,
   method,
   status_code,
   path_contains,
+  location_contains,
 } = {}) => {
   if (!fs.existsSync(auditLogPath)) {
     return [];
@@ -143,6 +145,10 @@ const getAuditLogs = ({
       return false;
     }
 
+    if (actor_role !== undefined && String(entry.actor_role || "guest") !== actor_role) {
+      return false;
+    }
+
     if (method && String(entry.method || "").toUpperCase() !== method) {
       return false;
     }
@@ -156,6 +162,19 @@ const getAuditLogs = ({
       !String(entry.path || "").toLowerCase().includes(path_contains.toLowerCase())
     ) {
       return false;
+    }
+
+    if (location_contains) {
+      const loc = entry.ip_location || {};
+      const needle = location_contains.toLowerCase();
+      const haystack = [
+        loc.city || "",
+        loc.region || "",
+        loc.country || "",
+      ].join(" ").toLowerCase();
+      if (!haystack.includes(needle)) {
+        return false;
+      }
     }
 
     return true;

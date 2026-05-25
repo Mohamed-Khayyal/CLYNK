@@ -160,6 +160,7 @@ JWT_REFRESH_SECRET=your_refresh_token_secret
 JWT_REFRESH_EXPIRES_IN=30d
 
 ALLOWED_ORIGINS=http://localhost:3000
+TRUST_PROXY=loopback, linklocal, uniquelocal
 
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX_REQUESTS=100
@@ -330,6 +331,7 @@ Audit logs are written under `logs/`:
 - `logs/audit.error.log`
 
 Sensitive fields such as passwords, tokens, cookies, and authorization headers are redacted before logging.
+Audit entries include `ip`, `request_ip`, and `ip_location` with `city`, `region`, `latitude`, `longitude`, and a Google Maps URL when geolocation is available. Set `TRUST_PROXY=true` or an appropriate proxy/subnet value in production if the API is behind a load balancer or reverse proxy. For the most accurate city, region, and coordinates, send `X-Client-Latitude` and `X-Client-Longitude`; the logger reverse-geocodes those coordinates.
 
 ## Important Notes
 
