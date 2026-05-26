@@ -92,6 +92,7 @@ This project supports:
 - Patients can book either:
   - an independent verified doctor
   - a verified clinic staff doctor
+- Doctors and clinic staff can create bookings for an existing patient by patient name
 - Booking slots are 30 minutes
 - Bookings are validated against working days, working hours, and overlap rules
 
@@ -267,11 +268,26 @@ If you are starting from scratch and `create_users.sql` already includes the lat
 ### Bookings
 
 - `POST /api/book`
+- `POST /api/book/provider`
 - `GET /api/book/my-bookings`
 - `GET /api/book/clinic-bookings`
 - `GET /api/book/slots`
 - `PATCH /api/book/clinic-bookings/:id/cancel`
 - `PATCH /api/book/:id/cancel`
+
+`POST /api/book/provider` is for authenticated `doctor` and `staff` users. Body:
+
+```json
+{
+  "patient_name": "Patient Full Name",
+  "patient_phone": "optional when names are duplicated",
+  "booking_date": "2026-06-01",
+  "booking_from": "10:00",
+  "staff_id": 12
+}
+```
+
+For direct doctors, the booking is created against the logged-in doctor. For staff doctors, `staff_id` is optional and defaults to the logged-in staff doctor. For non-doctor clinic staff, `staff_id` is required and must be a verified doctor in the same approved clinic.
 
 ### Notifications
 

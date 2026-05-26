@@ -4,6 +4,7 @@ const router = express.Router();
 const { protect, restrictTo } = require("../middlewares/auth");
 const {
   createBooking,
+  createProviderBooking,
   getMyBookings,
   getAvailableSlots,
   cancelBooking,
@@ -13,6 +14,12 @@ const {
 const { isClinicOwner } = require("../middlewares/isClinicOwner");
 
 router.post("/", protect, restrictTo("patient"), createBooking);
+router.post(
+  "/provider",
+  protect,
+  restrictTo("doctor", "staff"),
+  createProviderBooking,
+);
 router.get(
   "/my-bookings",
   protect,

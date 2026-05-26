@@ -9,6 +9,9 @@ const router = express.Router();
 router.use(auth.protect, auth.restrictTo("admin"), adminLimiter);
 
 router.post("/create-admin", adminController.createAdmin);
+router.get("/admins", adminController.getAllAdmins);
+router.delete("/users/:id", adminController.deleteUser);
+router.patch("/users/:id/undelete", adminController.undeleteUser);
 
 router.get("/clinics", adminController.getClinics);
 router.get("/pending-clinics", adminController.getPendingClinics);
@@ -30,6 +33,8 @@ router.get("/verified-staff", adminController.getVerifiedStaff);
 router.get("/unverified-staff", adminController.getUnverifiedStaff);
 router.get("/bookings", adminController.getAllBookings);
 router.get("/audit-logs", auditController.listAuditLogs);
+
+router.get("/patients", adminController.getAllPatients);
 
 router.get("/audit-stats", auditController.getAuditStats);
 router.get("/admin-stats", adminController.adminStats);

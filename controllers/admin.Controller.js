@@ -84,6 +84,115 @@ exports.createAdmin = catchAsync(async (req, res, next) => {
   }
 });
 
+exports.getAllAdmins = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      a.admin_id,
+      a.user_id,
+      u.email,
+      a.full_name,
+      u.photo,
+      u.is_active,
+      u.created_at
+    FROM dbo.Admins a
+    JOIN dbo.Users u
+      ON u.user_id = a.user_id
+    ORDER BY a.admin_id DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    admins: result.recordset,
+  });
+});
+
+exports.deleteUser = catchAsync(async (req, res, next) => {
+  const userId = Number(req.params.id);
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return next(new AppError("Invalid user id", 400));
+  }
+
+  if (userId === req.user.user_id) {
+    return next(new AppError("You cannot deactivate your own account", 400));
+  }
+
+  const user = (
+    await sql.query`
+      SELECT user_id, email, user_type, is_active
+      FROM dbo.Users
+      WHERE user_id = ${userId};
+    `
+  ).recordset[0];
+
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  if (!user.is_active) {
+    return next(new AppError("User is already inactive", 400));
+  }
+
+  await sql.query`
+    UPDATE dbo.Users
+    SET is_active = 0
+    WHERE user_id = ${userId};
+  `;
+
+  res.status(200).json({
+    status: "success",
+    message: "User deactivated successfully",
+    user: {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.user_type,
+      is_active: false,
+    },
+  });
+});
+
+exports.undeleteUser = catchAsync(async (req, res, next) => {
+  const userId = Number(req.params.id);
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return next(new AppError("Invalid user id", 400));
+  }
+
+  const user = (
+    await sql.query`
+      SELECT user_id, email, user_type, is_active
+      FROM dbo.Users
+      WHERE user_id = ${userId};
+    `
+  ).recordset[0];
+
+  if (!user) {
+    return next(new AppError("User not found", 404));
+  }
+
+  if (user.is_active) {
+    return next(new AppError("User is already active", 400));
+  }
+
+  await sql.query`
+    UPDATE dbo.Users
+    SET is_active = 1
+    WHERE user_id = ${userId};
+  `;
+
+  res.status(200).json({
+    status: "success",
+    message: "User reactivated successfully",
+    user: {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.user_type,
+      is_active: true,
+    },
+  });
+});
+
 exports.getClinics = catchAsync(async (req, res) => {
   const { status } = req.query;
 
@@ -357,7 +466,9 @@ exports.rejectClinic = catchAsync(async (req, res, next) => {
   }
 
   if (clinic.status !== "pending" && clinic.status !== "approved") {
-    return next(new AppError("Only pending or approved clinics can be rejected", 400));
+    return next(
+      new AppError("Only pending or approved clinics can be rejected", 400),
+    );
   }
 
   await sql.query`
@@ -417,7 +528,9 @@ exports.unverifyClinic = catchAsync(async (req, res, next) => {
   }
 
   if (clinic.status !== "approved" && clinic.status !== "rejected") {
-    return next(new AppError("Only approved or rejected clinics can be unverified", 400));
+    return next(
+      new AppError("Only approved or rejected clinics can be unverified", 400),
+    );
   }
 
   await sql.query`
@@ -755,6 +868,39 @@ exports.getAllStaff = catchAsync(async (req, res) => {
     status: "success",
     results: result.recordset.length,
     staff: result.recordset,
+  });
+});
+
+exports.getAllPatients = catchAsync(async (req, res) => {
+  const result = await sql.query`
+    SELECT
+      p.patient_id,
+      p.user_id,
+      u.email,
+      p.full_name,
+      p.phone,
+      p.gender,
+      u.is_active,
+      u.photo,
+      ISNULL(pb.total_bookings, 0) AS total_bookings,
+      ISNULL(pb.upcoming_bookings, 0) AS upcoming_bookings
+    FROM dbo.Patients p
+    JOIN dbo.Users u
+      ON u.user_id = p.user_id
+    OUTER APPLY (
+      SELECT
+        COUNT(*) AS total_bookings,
+        COUNT(CASE WHEN b.booking_date >= CAST(GETDATE() AS DATE) THEN 1 END) AS upcoming_bookings
+      FROM dbo.Bookings b
+      WHERE b.patient_user_id = p.user_id
+    ) pb
+    ORDER BY p.patient_id DESC;
+  `;
+
+  res.status(200).json({
+    status: "success",
+    results: result.recordset.length,
+    patients: result.recordset,
   });
 });
 

@@ -1,80 +1,172 @@
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const { sql } = require("../config/db.Config");
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
 const generateSlots = require("../utilts/generate.Slots");
 const { createNotification } = require("../utilts/notification");
 
-exports.createBooking = catchAsync(async (req, res, next) => {
-  const { doctor_id, staff_id, booking_date, booking_from } = req.body;
-  const patient_user_id = req.user.user_id;
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_REGEX = /^\d{2}:\d{2}$/;
 
-  if ((!doctor_id && !staff_id) || (doctor_id && staff_id)) {
-    return next(new AppError("Booking must target either a doctor or a staff member", 400));
-  }
+const normalizeId = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+};
 
+const validateBookingTime = (booking_date, booking_from) => {
   if (!booking_date || !booking_from) {
-    return next(
-      new AppError("booking_date and booking_from are required", 400),
-    );
+    throw new AppError("booking_date and booking_from are required", 400);
   }
 
-  if (!/^\d{2}:\d{2}$/.test(booking_from)) {
-    return next(new AppError("booking_from must be in HH:mm format", 400));
+  if (!DATE_REGEX.test(booking_date)) {
+    throw new AppError("booking_date must be in YYYY-MM-DD format", 400);
+  }
+
+  const [year, month, day] = booking_date.split("-").map(Number);
+  const date = new Date(`${booking_date}T00:00:00`);
+  if (
+    isNaN(date.getTime()) ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    throw new AppError("Invalid booking_date", 400);
+  }
+
+  if (!TIME_REGEX.test(booking_from)) {
+    throw new AppError("booking_from must be in HH:mm format", 400);
   }
 
   const start = new Date(`${booking_date}T${booking_from}:00`);
   if (isNaN(start.getTime()) || start < new Date()) {
-    return next(new AppError("Invalid booking time", 400));
+    throw new AppError("Invalid booking time", 400);
   }
 
-  const booking_to = new Date(start.getTime() + 30 * 60 * 1000)
+  return new Date(start.getTime() + 30 * 60 * 1000)
     .toTimeString()
     .slice(0, 5);
+};
 
-  let target;
+const buildGuestEmail = () => {
+  const token = crypto.randomBytes(6).toString("hex");
+  return `guest+${Date.now()}-${token}@clynk.local`;
+};
 
+const createGuestPatient = async ({ patient_name, patient_phone }) => {
+  const guestEmail = buildGuestEmail();
+  const rawPassword = crypto.randomBytes(24).toString("hex");
+  const hashedPassword = await bcrypt.hash(rawPassword, 12);
+
+  const transaction = new sql.Transaction(sql.globalConnectionPool);
+  let transactionStarted = false;
+
+  try {
+    await transaction.begin();
+    transactionStarted = true;
+
+    const userResult = await transaction.request().query`
+      INSERT INTO dbo.Users (email, password, user_type)
+      OUTPUT INSERTED.user_id
+      VALUES (${guestEmail}, ${hashedPassword}, 'patient');
+    `;
+
+    const userId = userResult.recordset[0].user_id;
+
+    const patientResult = await transaction.request().query`
+      INSERT INTO dbo.Patients (user_id, full_name, phone)
+      OUTPUT INSERTED.patient_id
+      VALUES (${userId}, ${patient_name}, ${patient_phone || null});
+    `;
+
+    await transaction.commit();
+
+    return {
+      patient_id: patientResult.recordset[0].patient_id,
+      patient_user_id: userId,
+      full_name: patient_name,
+      phone: patient_phone || null,
+    };
+  } catch (err) {
+    if (transactionStarted) {
+      try {
+        await transaction.rollback();
+      } catch (rollbackErr) {
+        console.error(
+          "Failed to roll back guest patient creation transaction:",
+          rollbackErr.message,
+        );
+      }
+    }
+    throw err;
+  }
+};
+
+const getBookingTarget = async ({ doctor_id, staff_id }) => {
   if (doctor_id) {
-    target = (
+    const target = (
       await sql.query`
         SELECT
           d.doctor_id,
           d.user_id,
+          d.full_name,
           d.work_days,
           CONVERT(VARCHAR(5), d.work_from,108) AS work_from,
           CONVERT(VARCHAR(5), d.work_to,108)   AS work_to
         FROM dbo.Doctors d
+        JOIN dbo.Users u
+          ON u.user_id = d.user_id
         WHERE d.doctor_id = ${doctor_id}
-          AND d.is_verified = 1;
+          AND d.is_verified = 1
+          AND u.is_active = 1;
       `
     ).recordset[0];
 
     if (!target) {
-      return next(new AppError("Doctor is not available", 404));
+      throw new AppError("Doctor is not available", 404);
     }
 
+    return target;
   }
 
-  if (staff_id) {
-    target = (
-      await sql.query`
-        SELECT
-          staff_id,
-          user_id,
-          work_days,
-          CONVERT(VARCHAR(5), work_from,108) AS work_from,
-          CONVERT(VARCHAR(5), work_to,108)   AS work_to
-        FROM dbo.Staff
-        WHERE staff_id = ${staff_id}
-          AND role_title = 'doctor'
-          AND is_verified = 1;
-      `
-    ).recordset[0];
+  const target = (
+    await sql.query`
+      SELECT
+        s.staff_id,
+        s.user_id,
+        s.full_name,
+        s.work_days,
+        CONVERT(VARCHAR(5), s.work_from,108) AS work_from,
+        CONVERT(VARCHAR(5), s.work_to,108)   AS work_to
+      FROM dbo.Staff s
+      JOIN dbo.Users u
+        ON u.user_id = s.user_id
+      JOIN dbo.Clinics c
+        ON c.clinic_id = s.clinic_id
+      WHERE s.staff_id = ${staff_id}
+        AND s.role_title = 'doctor'
+        AND s.is_verified = 1
+        AND u.is_active = 1
+        AND c.status = 'approved';
+    `
+  ).recordset[0];
 
-    if (!target) {
-      return next(new AppError("Doctor is not available", 404));
-    }
+  if (!target) {
+    throw new AppError("Doctor is not available", 404);
   }
 
+  return target;
+};
+
+const assertSlotAvailable = async ({
+  target,
+  doctor_id,
+  staff_id,
+  booking_date,
+  booking_from,
+  booking_to,
+}) => {
   const day = new Date(booking_date)
     .toLocaleDateString("en-US", { weekday: "short" })
     .toLowerCase();
@@ -84,11 +176,11 @@ exports.createBooking = catchAsync(async (req, res, next) => {
     .map((d) => d.trim().toLowerCase());
 
   if (!allowedDays.includes(day)) {
-    return next(new AppError("Doctor does not work on this day", 400));
+    throw new AppError("Doctor does not work on this day", 400);
   }
 
   if (booking_from < target.work_from || booking_to > target.work_to) {
-    return next(new AppError("Invalid booking time", 400));
+    throw new AppError("Invalid booking time", 400);
   }
 
   const overlap = doctor_id
@@ -110,11 +202,51 @@ exports.createBooking = catchAsync(async (req, res, next) => {
       `;
 
   if (overlap.recordset.length) {
-    return next(new AppError("This time slot is already booked", 409));
+    throw new AppError("This time slot is already booked", 409);
+  }
+};
+
+const assertPatientAvailability = async ({
+  patient_user_id,
+  booking_date,
+  booking_from,
+  booking_to,
+}) => {
+  const timeConflict = await sql.query`
+    SELECT booking_id
+    FROM dbo.Bookings
+    WHERE patient_user_id = ${patient_user_id}
+      AND booking_date = ${booking_date}
+      AND status = 'confirmed'
+      AND (${booking_from} < booking_to AND ${booking_to} > booking_from);
+  `;
+
+  if (timeConflict.recordset.length) {
+    throw new AppError("Patient already has a booking at this time", 409);
   }
 
-  const prescriptionAccessStatus = "accepted";
+  const dayConflict = await sql.query`
+    SELECT booking_id
+    FROM dbo.Bookings
+    WHERE patient_user_id = ${patient_user_id}
+      AND booking_date = ${booking_date}
+      AND status = 'confirmed';
+  `;
 
+  if (dayConflict.recordset.length) {
+    throw new AppError("Patient already has a booking for this day", 409);
+  }
+};
+
+const insertBooking = async ({
+  patient_user_id,
+  doctor_id,
+  staff_id,
+  booking_date,
+  booking_from,
+  booking_to,
+}) => {
+  const prescriptionAccessStatus = "accepted";
   const result = await sql.query`
     INSERT INTO dbo.Bookings
       (patient_user_id, doctor_id, staff_id,
@@ -134,16 +266,250 @@ exports.createBooking = catchAsync(async (req, res, next) => {
     );
   `;
 
+  return {
+    booking_id: result.recordset[0].booking_id,
+    prescription_access_status: prescriptionAccessStatus,
+  };
+};
+
+const createBookingRecord = async ({
+  patient_user_id,
+  doctor_id,
+  staff_id,
+  booking_date,
+  booking_from,
+}) => {
+  if ((!doctor_id && !staff_id) || (doctor_id && staff_id)) {
+    throw new AppError("Booking must target either a doctor or a staff member", 400);
+  }
+
+  const booking_to = validateBookingTime(booking_date, booking_from);
+
+  await assertPatientAvailability({
+    patient_user_id,
+    booking_date,
+    booking_from,
+    booking_to,
+  });
+
+  const target = await getBookingTarget({ doctor_id, staff_id });
+
+  await assertSlotAvailable({
+    target,
+    doctor_id,
+    staff_id,
+    booking_date,
+    booking_from,
+    booking_to,
+  });
+
+  const booking = await insertBooking({
+    patient_user_id,
+    doctor_id,
+    staff_id,
+    booking_date,
+    booking_from,
+    booking_to,
+  });
+
+  return { ...booking, booking_to, target };
+};
+
+const findPatientByName = async ({
+  patient_name,
+  patient_phone,
+  createIfMissing = false,
+}) => {
+  const patientName = typeof patient_name === "string" ? patient_name.trim() : "";
+  const patientPhone =
+    typeof patient_phone === "string" ? patient_phone.trim() : "";
+
+  if (!patientName) {
+    throw new AppError("patient_name is required", 400);
+  }
+
+  const request = new sql.Request();
+  request.input("patientName", sql.NVarChar(150), patientName);
+
+  let phoneFilter = "";
+  if (patientPhone) {
+    phoneFilter = "AND p.phone = @patientPhone";
+    request.input("patientPhone", sql.VarChar(20), patientPhone);
+  }
+
+  const result = await request.query(`
+    SELECT TOP (2)
+      p.patient_id,
+      p.user_id AS patient_user_id,
+      p.full_name,
+      p.phone
+    FROM dbo.Patients p
+    JOIN dbo.Users u
+      ON u.user_id = p.user_id
+    WHERE LTRIM(RTRIM(p.full_name)) = @patientName
+      ${phoneFilter}
+      AND u.is_active = 1
+    ORDER BY p.patient_id ASC;
+  `);
+
+  if (!result.recordset.length) {
+    if (!createIfMissing) {
+      throw new AppError("Patient not found", 404);
+    }
+
+    return createGuestPatient({
+      patient_name: patientName,
+      patient_phone: patientPhone || null,
+    });
+  }
+
+  if (result.recordset.length > 1) {
+    throw new AppError(
+      "More than one patient matches this name. Add patient_phone to choose the patient.",
+      409,
+    );
+  }
+
+  return result.recordset[0];
+};
+
+const getProviderTargetForUser = async ({ user, staff_id }) => {
+  if (user.user_type === "doctor") {
+    const doctor = (
+      await sql.query`
+        SELECT doctor_id
+        FROM dbo.Doctors
+        WHERE user_id = ${user.user_id}
+          AND is_verified = 1;
+      `
+    ).recordset[0];
+
+    if (!doctor) {
+      throw new AppError("Doctor profile not found or not verified", 404);
+    }
+
+    return { doctor_id: doctor.doctor_id, staff_id: null };
+  }
+
+  const staff = (
+    await sql.query`
+      SELECT staff_id, clinic_id, role_title, is_verified
+      FROM dbo.Staff
+      WHERE user_id = ${user.user_id}
+        AND is_verified = 1;
+    `
+  ).recordset[0];
+
+  if (!staff) {
+    throw new AppError("Staff profile not found or not verified", 404);
+  }
+
+  if (!staff_id && staff.role_title === "doctor" && staff.is_verified) {
+    return { doctor_id: null, staff_id: staff.staff_id };
+  }
+
+  if (!staff_id) {
+    throw new AppError("staff_id is required for non-doctor staff bookings", 400);
+  }
+
+  const staffDoctor = (
+    await sql.query`
+      SELECT s.staff_id
+      FROM dbo.Staff s
+      JOIN dbo.Users u
+        ON u.user_id = s.user_id
+      JOIN dbo.Clinics c
+        ON c.clinic_id = s.clinic_id
+      WHERE s.staff_id = ${staff_id}
+        AND s.clinic_id = ${staff.clinic_id}
+        AND s.role_title = 'doctor'
+        AND s.is_verified = 1
+        AND u.is_active = 1
+        AND c.status = 'approved';
+    `
+  ).recordset[0];
+
+  if (!staffDoctor) {
+    throw new AppError("Staff doctor is not available in your clinic", 404);
+  }
+
+  return { doctor_id: null, staff_id: staffDoctor.staff_id };
+};
+
+exports.createBooking = catchAsync(async (req, res) => {
+  const { booking_date, booking_from } = req.body;
+  const doctor_id = normalizeId(req.body.doctor_id);
+  const staff_id = normalizeId(req.body.staff_id);
+  const patient_user_id = req.user.user_id;
+
+  const booking = await createBookingRecord({
+    patient_user_id,
+    doctor_id,
+    staff_id,
+    booking_date,
+    booking_from,
+  });
+
   await createNotification({
-    user_id: target.user_id,
-    title: "تم استلام حجز جديد",
-    message: `تم جدولة حجز بتاريخ ${booking_date} من ${booking_from} إلى ${booking_to}.`,
+    user_id: booking.target.user_id,
+    title: "New booking received",
+    message: `A booking was scheduled on ${booking_date} from ${booking_from} to ${booking.booking_to}.`,
   });
 
   res.status(201).json({
     status: "success",
-    booking_id: result.recordset[0].booking_id,
-    prescription_access_status: prescriptionAccessStatus,
+    booking_id: booking.booking_id,
+    prescription_access_status: booking.prescription_access_status,
+  });
+});
+
+exports.createProviderBooking = catchAsync(async (req, res) => {
+  const { patient_name, patient_phone, booking_date } = req.body;
+  const booking_from =
+    req.body.booking_from || req.body.slot_from || req.body.slot?.from;
+  const requestedStaffId = normalizeId(req.body.staff_id);
+
+  const patient = await findPatientByName({
+    patient_name,
+    patient_phone,
+    createIfMissing: true,
+  });
+  const { doctor_id, staff_id } = await getProviderTargetForUser({
+    user: req.user,
+    staff_id: requestedStaffId,
+  });
+
+  const booking = await createBookingRecord({
+    patient_user_id: patient.patient_user_id,
+    doctor_id,
+    staff_id,
+    booking_date,
+    booking_from,
+  });
+
+  await createNotification({
+    user_id: patient.patient_user_id,
+    title: "Booking created",
+    message: `${booking.target.full_name} scheduled a booking for ${booking_date} from ${booking_from} to ${booking.booking_to}.`,
+  });
+
+  res.status(201).json({
+    status: "success",
+    booking: {
+      booking_id: booking.booking_id,
+      patient: {
+        patient_id: patient.patient_id,
+        patient_user_id: patient.patient_user_id,
+        full_name: patient.full_name,
+        phone: patient.phone,
+      },
+      doctor_id,
+      staff_id,
+      booking_date,
+      booking_from,
+      booking_to: booking.booking_to,
+      prescription_access_status: booking.prescription_access_status,
+    },
   });
 });
 
