@@ -130,6 +130,28 @@ const sendSignupWelcomeEmail = async ({ email, profile }) => {
   }
 };
 
+const getAccountName = (profile, email) =>
+  (profile?.full_name || profile?.name).trim();
+
+const getClinicName = (profile) => (profile?.name || profile?.full_name).trim();
+
+const getStaffClinicName = (profile) => {
+  const legacyClinicName =
+    profile?.name && profile.name !== profile.full_name ? profile.name : null;
+  const clinicName =
+    profile?.clinic_name ||
+    profile?.clinicName ||
+    profile?.clinic ||
+    legacyClinicName;
+  return typeof clinicName === "string" ? clinicName.trim() : "";
+};
+
+const normalizeWorkDays = (workDays) =>
+  Array.isArray(workDays) ? workDays.join(",") : workDays || null;
+
+const nullable = (value) =>
+  value === undefined || value === "" ? null : value;
+
 const getDoctorProfileByUserId = async (userId) => {
   const profile = (
     await sql.query`
@@ -180,7 +202,6 @@ const getStaffProfileByUserId = async (userId) => {
         s.gender,
         s.years_of_experience,
         s.bio,
-        s.role_title,
         s.specialist,
         s.work_days,
         CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
@@ -268,7 +289,8 @@ exports.signup = catchAsync(async (req, res, next) => {
     user = userResult.recordset[0];
 
     if (user_type === "patient") {
-      const { full_name, date_of_birth, gender, phone } = profile;
+      const { date_of_birth, gender, phone } = profile;
+      const full_name = getAccountName(profile);
 
       const patientResult = await transaction.request().query`
         INSERT INTO dbo.Patients
@@ -283,7 +305,6 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
     if (user_type === "doctor") {
       const {
-        full_name,
         license_number,
         gender,
         phone,
@@ -297,6 +318,8 @@ exports.signup = catchAsync(async (req, res, next) => {
         location,
         geo_location,
       } = profile;
+      const full_name = getAccountName(profile);
+      const normalizedWorkDays = normalizeWorkDays(work_days);
       const doctorGeoLocation = normalizeGeoLocation(
         geo_location,
         "profile.geo_location",
@@ -310,9 +333,9 @@ exports.signup = catchAsync(async (req, res, next) => {
            geo_location)
           OUTPUT INSERTED.doctor_id
           VALUES
-          (${user.user_id}, ${full_name}, ${license_number}, ${gender || null}, ${phone || null},
-           ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
-           ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
+          (${user.user_id}, ${full_name}, ${nullable(license_number)}, ${gender || null}, ${phone || null},
+           ${nullable(years_of_experience)}, ${bio || null}, ${nullable(consultation_price)},
+           ${specialist || null}, ${normalizedWorkDays}, ${work_from || null}, ${work_to || null}, ${location || null},
            geography::Point(${doctorGeoLocation.latitude}, ${doctorGeoLocation.longitude}, 4326));
         `;
         roleIds.doctorid = doctorResult.recordset[0].doctor_id;
@@ -324,9 +347,9 @@ exports.signup = catchAsync(async (req, res, next) => {
            geo_location)
           OUTPUT INSERTED.doctor_id
           VALUES
-          (${user.user_id}, ${full_name}, ${license_number}, ${gender || null}, ${phone || null},
-           ${years_of_experience || null}, ${bio || null}, ${consultation_price || null},
-           ${specialist}, ${work_days}, ${work_from}, ${work_to}, ${location || null},
+          (${user.user_id}, ${full_name}, ${nullable(license_number)}, ${gender || null}, ${phone || null},
+           ${nullable(years_of_experience)}, ${bio || null}, ${nullable(consultation_price)},
+           ${specialist || null}, ${normalizedWorkDays}, ${work_from || null}, ${work_to || null}, ${location || null},
            CAST(NULL AS GEOGRAPHY));
         `;
         roleIds.doctorid = doctorResult.recordset[0].doctor_id;
@@ -346,13 +369,13 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
     if (user_type === "clinic") {
       const {
-        name,
         address,
         location,
         phone,
         email: clinic_email,
         geo_location,
       } = profile;
+      const name = getClinicName(profile);
       const clinicGeoLocation = normalizeGeoLocation(
         geo_location,
         "profile.geo_location",
@@ -365,7 +388,7 @@ exports.signup = catchAsync(async (req, res, next) => {
             (owner_user_id, name, address, location, phone, email, status, geo_location)
           OUTPUT INSERTED.clinic_id
           VALUES
-            (${user.user_id}, ${name}, ${address || null}, ${location},
+            (${user.user_id}, ${name}, ${address || null}, ${location || null},
              ${phone || null}, ${contactEmail}, 'pending',
              geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326));
         `;
@@ -376,7 +399,7 @@ exports.signup = catchAsync(async (req, res, next) => {
             (owner_user_id, name, address, location, phone, email, status, geo_location)
           OUTPUT INSERTED.clinic_id
           VALUES
-            (${user.user_id}, ${name}, ${address || null}, ${location},
+            (${user.user_id}, ${name}, ${address || null}, ${location || null},
              ${phone || null}, ${contactEmail}, 'pending',
              CAST(NULL AS GEOGRAPHY));
         `;
@@ -397,12 +420,9 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
     if (user_type === "staff") {
       const {
-        full_name,
-        name,
         years_of_experience,
         location,
         gender,
-        role_title,
         specialist,
         work_days,
         work_from,
@@ -410,19 +430,40 @@ exports.signup = catchAsync(async (req, res, next) => {
         consultation_price,
         phone,
       } = profile;
+      const full_name = getAccountName(profile);
+      const clinicName = getStaffClinicName(profile);
+      const normalizedWorkDays = normalizeWorkDays(work_days);
+      let clinic = null;
 
-      // Find clinic using clinic name
-      const clinic = (
+      if (!clinicName) {
+        throw new AppError("Clinic name is required", 400);
+      }
+
+      clinic = (
         await transaction.request().query`
-      SELECT clinic_id, name, owner_user_id
-      FROM dbo.Clinics
-      WHERE name = ${name}
-      AND status = 'approved';
-    `
+          SELECT clinic_id, name, owner_user_id
+          FROM dbo.Clinics
+          WHERE name = ${clinicName}
+            AND status = 'approved';
+        `
       ).recordset[0];
 
       if (!clinic) {
         throw new AppError("Clinic not found or not approved", 400);
+      }
+
+      const normalizedPrice =
+        consultation_price === undefined ||
+        consultation_price === null ||
+        consultation_price === ""
+          ? null
+          : Number(consultation_price);
+
+      if (normalizedPrice !== null && (Number.isNaN(normalizedPrice) || normalizedPrice < 0)) {
+        throw new AppError(
+          "consultation_price must be a valid non-negative number",
+          400,
+        );
       }
 
       // Insert staff
@@ -432,7 +473,6 @@ exports.signup = catchAsync(async (req, res, next) => {
       user_id,
       clinic_id,
       full_name,
-      role_title,
       phone,
       specialist,
       work_days,
@@ -447,18 +487,17 @@ exports.signup = catchAsync(async (req, res, next) => {
       ${user.user_id},
       ${clinic.clinic_id},
       ${full_name},
-      ${role_title},
       ${phone || null},
-      ${role_title === "doctor" ? specialist : null},
-      ${role_title === "doctor" ? work_days : null},
-      ${role_title === "doctor" ? work_from : null},
-      ${role_title === "doctor" ? work_to : null},
-      ${role_title === "doctor" ? consultation_price : null},
+      ${specialist || null},
+      ${normalizedWorkDays},
+      ${work_from || null},
+      ${work_to || null},
+      ${normalizedPrice},
       0
     );
   `;
 
-      user.clinic_name = clinic.name;
+      user.clinic_name = clinic?.name;
       roleIds.clinicid = clinic.clinic_id;
       roleIds.staffid = staffResult.recordset[0].staff_id;
 

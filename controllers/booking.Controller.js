@@ -145,7 +145,9 @@ const getBookingTarget = async ({ doctor_id, staff_id }) => {
       JOIN dbo.Clinics c
         ON c.clinic_id = s.clinic_id
       WHERE s.staff_id = ${staff_id}
-        AND s.role_title = 'doctor'
+        AND s.work_days IS NOT NULL
+        AND s.work_from IS NOT NULL
+        AND s.work_to IS NOT NULL
         AND s.is_verified = 1
         AND u.is_active = 1
         AND c.status = 'approved';
@@ -393,7 +395,7 @@ const getProviderTargetForUser = async ({ user, staff_id }) => {
 
   const staff = (
     await sql.query`
-      SELECT staff_id, clinic_id, role_title, is_verified
+      SELECT staff_id, clinic_id, work_days, work_from, work_to, is_verified
       FROM dbo.Staff
       WHERE user_id = ${user.user_id}
         AND is_verified = 1;
@@ -404,7 +406,11 @@ const getProviderTargetForUser = async ({ user, staff_id }) => {
     throw new AppError("Staff profile not found or not verified", 404);
   }
 
-  if (!staff_id && staff.role_title === "doctor" && staff.is_verified) {
+  const staffHasSchedule = Boolean(
+    staff.work_days && staff.work_from && staff.work_to,
+  );
+
+  if (!staff_id && staffHasSchedule) {
     return { doctor_id: null, staff_id: staff.staff_id };
   }
 
@@ -422,7 +428,9 @@ const getProviderTargetForUser = async ({ user, staff_id }) => {
         ON c.clinic_id = s.clinic_id
       WHERE s.staff_id = ${staff_id}
         AND s.clinic_id = ${staff.clinic_id}
-        AND s.role_title = 'doctor'
+        AND s.work_days IS NOT NULL
+        AND s.work_from IS NOT NULL
+        AND s.work_to IS NOT NULL
         AND s.is_verified = 1
         AND u.is_active = 1
         AND c.status = 'approved';
@@ -430,7 +438,7 @@ const getProviderTargetForUser = async ({ user, staff_id }) => {
   ).recordset[0];
 
   if (!staffDoctor) {
-    throw new AppError("Staff doctor is not available in your clinic", 404);
+    throw new AppError("Staff member is not available in your clinic", 404);
   }
 
   return { doctor_id: null, staff_id: staffDoctor.staff_id };
@@ -542,7 +550,6 @@ exports.getMyBookings = catchAsync(async (req, res, next) => {
         SELECT staff_id
         FROM dbo.Staff
         WHERE user_id = @ownerId
-          AND role_title = 'doctor'
       )
     `;
     ownerValue = user_id;
@@ -642,7 +649,6 @@ exports.getClinicBookings = catchAsync(async (req, res, next) => {
 
     LEFT JOIN dbo.Staff s
       ON s.staff_id = b.staff_id
-     AND s.role_title = 'doctor'
 
     LEFT JOIN dbo.Clinics c
       ON c.clinic_id = s.clinic_id
@@ -692,7 +698,9 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
                CONVERT(VARCHAR(5), work_to,108)   AS work_to
         FROM dbo.Staff
         WHERE staff_id = ${staff_id}
-          AND role_title='doctor'
+            AND work_days IS NOT NULL
+            AND work_from IS NOT NULL
+            AND work_to IS NOT NULL
           AND is_verified = 1;
       `
     ).recordset[0];
@@ -794,8 +802,7 @@ exports.cancelBooking = catchAsync(async (req, res, next) => {
       await sql.query`
         SELECT staff_id
         FROM dbo.Staff
-        WHERE user_id = ${user_id}
-          AND role_title = 'doctor';
+        WHERE user_id = ${user_id};
       `
     ).recordset[0];
 

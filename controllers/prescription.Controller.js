@@ -207,7 +207,9 @@ const getProviderProfile = async (user) => {
           specialist
         FROM dbo.Staff
         WHERE user_id = ${user.user_id}
-          AND role_title = 'doctor'
+          AND work_days IS NOT NULL
+          AND work_from IS NOT NULL
+          AND work_to IS NOT NULL
           AND is_verified = 1;
       `
     ).recordset[0];

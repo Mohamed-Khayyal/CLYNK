@@ -2,9 +2,7 @@ const AppError = require("../utilts/app.Error");
 const { normalizeGeoLocation } = require("../utilts/geo.Location");
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
-const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
 const ALLOWED_SIGNUP_ROLES = ["patient", "doctor", "staff", "clinic"];
-const STAFF_ROLES = ["doctor", "nurse", "receptionist"];
 const DEFAULT_PASSWORD_RESET_OTP_DIGITS = 6;
 const MIN_PASSWORD_RESET_OTP_DIGITS = 4;
 const MAX_PASSWORD_RESET_OTP_DIGITS = 8;
@@ -26,8 +24,29 @@ const getPasswordResetOtpDigits = () => {
   return DEFAULT_PASSWORD_RESET_OTP_DIGITS;
 };
 
+const normalizeSignupName = (bodyName, profile, userType) => {
+  const rawName =
+    bodyName ||
+    profile?.full_name ||
+    (userType === "clinic" ? profile?.name : null) ||
+    profile?.name;
+  return typeof rawName === "string" ? rawName.trim() : "";
+};
+
+const getStaffClinicName = (profile) => {
+  const legacyClinicName =
+    profile?.name && profile.name !== profile.full_name ? profile.name : null;
+  const clinicName =
+    profile?.clinic_name ||
+    profile?.clinicName ||
+    profile?.clinic ||
+    legacyClinicName;
+
+  return typeof clinicName === "string" ? clinicName.trim() : "";
+};
+
 exports.signupValidation = (req, res, next) => {
-  const { email, password, user_type, profile } = req.body;
+  const { email, password, user_type, profile, name } = req.body;
 
   if (!email || !password || !user_type) {
     return next(
@@ -47,141 +66,42 @@ exports.signupValidation = (req, res, next) => {
     return next(new AppError("Invalid user_type", 400));
   }
 
-  if (!profile || typeof profile !== "object") {
-    return next(new AppError("Profile data is required", 400));
+  if (profile !== undefined && (!profile || typeof profile !== "object")) {
+    return next(new AppError("Profile data must be an object", 400));
   }
 
-  if (user_type === "patient") {
-    if (!profile.full_name) {
-      return next(new AppError("patient full_name is required", 400));
-    }
+  const normalizedProfile = profile ? { ...profile } : {};
+  const signupName = normalizeSignupName(name, normalizedProfile, user_type);
+
+  if (!signupName) {
+    return next(new AppError("Name is required", 400));
   }
+
+  normalizedProfile.name = normalizedProfile.name || signupName;
+  normalizedProfile.full_name = normalizedProfile.full_name || signupName;
+  req.body.name = signupName;
+  req.body.profile = normalizedProfile;
 
   if (user_type === "doctor") {
-    const {
-      full_name,
-      license_number,
-      specialist,
-      work_days,
-      work_from,
-      work_to,
-    } = profile;
-
-    if (
-      !full_name ||
-      !license_number ||
-      !specialist ||
-      !work_days ||
-      !work_from ||
-      !work_to
-    ) {
-      return next(
-        new AppError(
-          "Doctor fields full_name, license_number, specialist, work_days, work_from, and work_to are required",
-          400,
-        ),
-      );
-    }
-
-    if (!TIME_REGEX.test(work_from) || !TIME_REGEX.test(work_to)) {
-      return next(new AppError("Invalid doctor working time format", 400));
-    }
-
     try {
-      normalizeGeoLocation(profile.geo_location, "profile.geo_location");
+      normalizeGeoLocation(normalizedProfile.geo_location, "profile.geo_location");
     } catch (err) {
       return next(err);
     }
   }
 
   if (user_type === "staff") {
-    const {
-      full_name,
-      name,
-      role_title,
-      specialist,
-      work_days,
-      work_from,
-      work_to,
-      consultation_price,
-    } = profile;
+    const clinicName = getStaffClinicName(normalizedProfile);
 
-    if (!full_name || !name || !role_title) {
-      return next(
-        new AppError(
-          "Staff fields full_name, name, and role_title are required",
-          400,
-        ),
-      );
-    }
-
-    if (!STAFF_ROLES.includes(role_title)) {
-      return next(new AppError("Invalid staff role_title value", 400));
-    }
-
-    // validate clinic name
-    if (typeof name !== "string" || !name.trim()) {
+    if (!clinicName) {
       return next(new AppError("Clinic name is required", 400));
     }
 
-    if (role_title === "doctor") {
-      if (
-        !specialist ||
-        !work_days ||
-        !work_from ||
-        !work_to ||
-        consultation_price === undefined ||
-        consultation_price === null
-      ) {
-        return next(
-          new AppError(
-            "Staff doctor requires specialist, work_days, work_from, work_to, and consultation_price",
-            400,
-          ),
-        );
-      }
-
-      if (!TIME_REGEX.test(work_from) || !TIME_REGEX.test(work_to)) {
-        return next(
-          new AppError("Invalid staff doctor working time format", 400),
-        );
-      }
-
-      if (
-        Number.isNaN(Number(consultation_price)) ||
-        Number(consultation_price) < 0
-      ) {
-        return next(
-          new AppError(
-            "consultation_price must be a valid non-negative number",
-            400,
-          ),
-        );
-      }
-    } else {
-      if (
-        specialist !== undefined ||
-        work_days !== undefined ||
-        work_from !== undefined ||
-        work_to !== undefined ||
-        consultation_price !== undefined
-      ) {
-        return next(
-          new AppError(
-            "specialist, work_days, work_from, work_to, and consultation_price are allowed only for staff doctors",
-            400,
-          ),
-        );
-      }
-    }
+    normalizedProfile.clinic_name = clinicName;
   }
 
   if (user_type === "clinic") {
-    const { name, location, email: clinic_email, geo_location } = profile;
-
-    if (!name || !location) {
-      return next(new AppError("Clinic fields name and location are required", 400));
-    }
+    const { email: clinic_email, geo_location } = normalizedProfile;
 
     if (clinic_email && !EMAIL_REGEX.test(clinic_email)) {
       return next(new AppError("Invalid clinic email format", 400));

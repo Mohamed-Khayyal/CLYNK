@@ -28,13 +28,9 @@ exports.createClinic = catchAsync(async (req, res, next) => {
     photo,
     geo_location,
   } = req.body;
-
-  if (!name || !location || !email || !password) {
+  if (!name || !email || !password) {
     return next(
-      new AppError(
-        "Clinic name, location, email, and password are required",
-        400,
-      ),
+      new AppError("Name, email, and password are required", 400),
     );
   }
 
@@ -90,7 +86,7 @@ exports.createClinic = catchAsync(async (req, res, next) => {
             (${owner.user_id},
              ${name},
              ${address || null},
-             ${location},
+             ${location || null},
              ${phone || null},
              ${email},
              'pending',
@@ -104,7 +100,7 @@ exports.createClinic = catchAsync(async (req, res, next) => {
             (${owner.user_id},
              ${name},
              ${address || null},
-             ${location},
+             ${location || null},
              ${phone || null},
              ${email},
              'pending',
@@ -177,7 +173,9 @@ exports.getPublicClinics = catchAsync(async (req, res) => {
       JOIN dbo.Users su
         ON su.user_id = s.user_id
       WHERE s.clinic_id = c.clinic_id
-        AND s.role_title = 'doctor'
+        AND s.work_days IS NOT NULL
+        AND s.work_from IS NOT NULL
+        AND s.work_to IS NOT NULL
         AND s.is_verified = 1
         AND su.is_active = 1
     ) ds
@@ -270,7 +268,6 @@ exports.getActiveClinicStaff = catchAsync(async (req, res, next) => {
     SELECT
       s.staff_id,
       s.full_name,
-      s.role_title,
       s.specialist,
       s.work_days,
       CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
@@ -279,7 +276,9 @@ exports.getActiveClinicStaff = catchAsync(async (req, res, next) => {
       u.photo,
 
       CASE
-        WHEN s.role_title = 'doctor' THEN 1
+        WHEN s.work_days IS NOT NULL
+          AND s.work_from IS NOT NULL
+          AND s.work_to IS NOT NULL THEN 1
         ELSE 0
       END AS can_be_booked
 
@@ -363,7 +362,9 @@ exports.getClinicProfile = catchAsync(async (req, res, next) => {
       WHERE r.staff_id = s.staff_id
     ) rt
     WHERE s.clinic_id = ${clinicId}
-      AND s.role_title = 'doctor'
+      AND s.work_days IS NOT NULL
+      AND s.work_from IS NOT NULL
+      AND s.work_to IS NOT NULL
       AND s.is_verified = 1;
   `;
 
@@ -400,7 +401,9 @@ exports.getClinicStats = catchAsync(async (req, res) => {
     SELECT COUNT(*) AS total_doctors
     FROM dbo.Staff
     WHERE clinic_id = ${clinic_id}
-      AND role_title = 'doctor'
+      AND work_days IS NOT NULL
+      AND work_from IS NOT NULL
+      AND work_to IS NOT NULL
       AND is_verified = 1;
   `;
 

@@ -18,11 +18,12 @@ const getAdminUserId = (req, next) => {
 };
 
 exports.createAdmin = catchAsync(async (req, res, next) => {
-  const { email, password, full_name } = req.body;
+  const { email, password, full_name, name } = req.body;
+  const adminName = full_name || name;
 
-  if (!email || !password || !full_name) {
+  if (!email || !password || !adminName) {
     return next(
-      new AppError("Email, password, and full_name are required", 400),
+      new AppError("Name, email, and password are required", 400),
     );
   }
 
@@ -56,7 +57,7 @@ exports.createAdmin = catchAsync(async (req, res, next) => {
 
     await transaction.request().query`
       INSERT INTO dbo.Admins (user_id, full_name)
-      VALUES (${userId}, ${full_name});
+      VALUES (${userId}, ${adminName});
     `;
 
     await transaction.commit();
@@ -839,7 +840,6 @@ exports.getAllStaff = catchAsync(async (req, res) => {
       s.user_id,
       u.email,
       s.full_name,
-      s.role_title,
       s.specialist,
       s.work_days,
       CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
@@ -911,7 +911,6 @@ exports.getVerifiedStaff = catchAsync(async (req, res) => {
       s.user_id,
       u.email,
       s.full_name,
-      s.role_title,
       s.specialist,
       s.work_days,
       CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
@@ -951,7 +950,6 @@ exports.getUnverifiedStaff = catchAsync(async (req, res) => {
       s.user_id,
       u.email,
       s.full_name,
-      s.role_title,
       s.specialist,
       s.work_days,
       CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
@@ -1021,7 +1019,6 @@ exports.getAllBookings = catchAsync(async (req, res) => {
 
     LEFT JOIN dbo.Staff s
       ON s.staff_id = b.staff_id
-     AND s.role_title = 'doctor'
 
     LEFT JOIN dbo.Clinics c
       ON c.clinic_id = s.clinic_id

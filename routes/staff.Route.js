@@ -7,6 +7,7 @@ const {
   verifyStaff,
   getPendingStaff,
   getStaffProfile,
+  UnVerifyStaff,
 } = require("../controllers/staff.Controller");
 
 const { protect, restrictTo } = require("../middlewares/auth");
@@ -19,5 +20,6 @@ router.post("/create", createStaffForClinic);
 router.get("/pending", getPendingStaff);
 router.get("/my-clinic", getMyClinicStaff);
 router.patch("/:staffId/verify", verifyStaff);
+router.patch("/:staffId/unverify", UnVerifyStaff);
 
 module.exports = router;

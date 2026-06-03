@@ -5,7 +5,6 @@ const AppError = require("../utilts/app.Error");
 const { createNotification } = require("../utilts/notification");
 const Email = require("../utilts/email");
 
-const ALLOWED_STAFF_ROLES = new Set(["doctor", "nurse", "receptionist"]);
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
 
 const sendStaffDoctorPendingVerificationEmail = async ({ email, full_name }) => {
@@ -24,7 +23,7 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
     email,
     password,
     full_name,
-    role_title,
+    name,
     phone,
     specialist,
     work_days,
@@ -33,18 +32,12 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
     consultation_price,
   } = req.body;
   const { clinic_id, owner_user_id } = req.clinic;
+  const staffName = full_name || name;
 
-  if (!email || !password || !full_name || !role_title) {
+  if (!email || !password || !staffName) {
     return next(
-      new AppError(
-        "Email, password, full_name, and role_title are required",
-        400,
-      ),
+      new AppError("Name, email, and password are required", 400),
     );
-  }
-
-  if (!ALLOWED_STAFF_ROLES.has(role_title)) {
-    return next(new AppError("Invalid role_title value", 400));
   }
 
   const exists = await sql.query`
@@ -54,37 +47,27 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
     return next(new AppError("Email is already in use", 409));
   }
 
-  const isDoctor = role_title === "doctor";
   const normalizedWorkDays = Array.isArray(work_days)
     ? work_days.join(",")
-    : work_days;
-  const normalizedPrice = Number(consultation_price);
+    : work_days || null;
+  const normalizedPrice =
+    consultation_price === undefined ||
+    consultation_price === null ||
+    consultation_price === ""
+      ? null
+      : Number(consultation_price);
 
-  if (isDoctor) {
-    if (!specialist) {
-      return next(
-        new AppError("specialist is required when role_title is doctor", 400),
-      );
-    }
+  if (
+    (work_from && !TIME_REGEX.test(work_from)) ||
+    (work_to && !TIME_REGEX.test(work_to))
+  ) {
+    return next(new AppError("Invalid work time format", 400));
+  }
 
-    if (!normalizedWorkDays || !work_from || !work_to) {
-      return next(
-        new AppError(
-          "work_days, work_from, and work_to are required for staff doctors",
-          400,
-        ),
-      );
-    }
-
-    if (!TIME_REGEX.test(work_from) || !TIME_REGEX.test(work_to)) {
-      return next(new AppError("Invalid work time format", 400));
-    }
-
-    if (Number.isNaN(normalizedPrice) || normalizedPrice < 0) {
-      return next(
-        new AppError("consultation_price must be a valid non-negative number", 400),
-      );
-    }
+  if (Number.isNaN(normalizedPrice) || normalizedPrice < 0) {
+    return next(
+      new AppError("consultation_price must be a valid non-negative number", 400),
+    );
   }
 
   const hashedPassword = await bcrypt.hash(password, 12);
@@ -110,7 +93,6 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
         (user_id,
          clinic_id,
          full_name,
-         role_title,
          phone,
          specialist,
          work_days,
@@ -121,14 +103,13 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
       VALUES
         (${userId},
          ${clinic_id},
-         ${full_name},
-         ${role_title},
+         ${staffName},
          ${phone || null},
-         ${isDoctor ? specialist : null},
-         ${isDoctor ? normalizedWorkDays : null},
-         ${isDoctor ? work_from : null},
-         ${isDoctor ? work_to : null},
-         ${isDoctor ? normalizedPrice : null},
+         ${specialist || null},
+         ${normalizedWorkDays},
+         ${work_from || null},
+         ${work_to || null},
+         ${normalizedPrice},
          0);
     `;
 
@@ -144,12 +125,19 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
     await createNotification({
       user_id: owner_user_id,
       title: "توثيق الموظف قيد الانتظار",
-      message: `تم إنشاء حساب موظف باسم "${full_name}" وهو بانتظار التوثيق.`,
+      message: `تم إنشاء حساب موظف باسم "${staffName}" وهو بانتظار التوثيق.`,
     });
   }
 
-  if (isDoctor) {
-    await sendStaffDoctorPendingVerificationEmail({ email, full_name });
+  const hasDoctorProfile = Boolean(
+    specialist || normalizedWorkDays || work_from || work_to || normalizedPrice !== null,
+  );
+
+  if (hasDoctorProfile) {
+    await sendStaffDoctorPendingVerificationEmail({
+      email,
+      full_name: staffName,
+    });
   }
 
   res.status(201).json({
@@ -157,14 +145,13 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
     staff: {
       user_id: userId,
       email,
-      full_name,
-      role_title,
+      full_name: staffName,
       phone: phone || null,
-      specialist: isDoctor ? specialist : null,
-      work_days: isDoctor ? normalizedWorkDays : null,
-      work_from: isDoctor ? work_from : null,
-      work_to: isDoctor ? work_to : null,
-      consultation_price: isDoctor ? normalizedPrice : null,
+      specialist: specialist || null,
+      work_days: normalizedWorkDays,
+      work_from: work_from || null,
+      work_to: work_to || null,
+      consultation_price: normalizedPrice,
       clinic_id,
       is_verified: false,
     },
@@ -179,7 +166,6 @@ exports.getMyClinicStaff = catchAsync(async (req, res) => {
       s.staff_id,
       u.email,
       s.full_name,
-      s.role_title,
       s.specialist,
       s.is_verified,
       u.is_active,
@@ -237,6 +223,45 @@ exports.verifyStaff = catchAsync(async (req, res, next) => {
     staff_id: staffId,
   });
 });
+exports.UnVerifyStaff = catchAsync(async (req, res, next) => {
+  const staffId = Number(req.params.staffId);
+  const { clinic_id } = req.clinic;
+
+  const staffResult = await sql.query`
+    SELECT staff_id, user_id, is_verified
+    FROM dbo.Staff
+    WHERE staff_id = ${staffId}
+      AND clinic_id = ${clinic_id};
+  `;
+
+  const staff = staffResult.recordset[0];
+  if (!staff) {
+    return next(new AppError("Staff member is not part of your clinic", 404));
+  }
+
+  if (!staff.is_verified) {
+    return next(new AppError("Staff member is already unverified", 400));
+  }
+
+  await sql.query`
+    UPDATE dbo.Staff
+    SET is_verified = 0
+    WHERE staff_id = ${staffId};
+  `;
+
+  await createNotification({
+    user_id: staff.user_id,
+    title: "تم إلغاء توثيق حساب الموظف",
+    message:
+      "تم إلغاء توثيق حسابك كموظف. يمكنك الآن الوصول إلى ميزات العيادة.",
+  });
+
+  res.status(200).json({
+    status: "success",
+    message: "Staff member unverified successfully",
+    staff_id: staffId,
+  });
+});
 
 exports.getPendingStaff = catchAsync(async (req, res) => {
   const { clinic_id } = req.clinic;
@@ -245,7 +270,6 @@ exports.getPendingStaff = catchAsync(async (req, res) => {
     SELECT
       s.staff_id,
       s.full_name,
-      s.role_title,
       s.specialist,
       u.email,
       u.photo,
@@ -280,7 +304,6 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
       s.bio,
       s.phone,
       s.gender,
-      s.role_title,
       s.specialist,
       s.work_days,
 
@@ -384,7 +407,9 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
 
     WHERE
       s.staff_id=${staffId}
-      AND s.role_title='doctor'
+      AND s.work_days IS NOT NULL
+      AND s.work_from IS NOT NULL
+      AND s.work_to IS NOT NULL
       AND s.is_verified=1
       AND u.is_active=1
       AND c.status='approved'
@@ -394,7 +419,7 @@ exports.getStaffProfile = catchAsync(async (req, res, next) => {
   if (!result.recordset.length) {
     return next(
       new AppError(
-        "Staff doctor not found",
+        "Staff member not found",
         404
       )
     );

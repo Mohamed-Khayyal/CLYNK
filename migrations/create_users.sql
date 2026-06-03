@@ -48,7 +48,7 @@ CREATE TABLE dbo.Clinics (
 
     name NVARCHAR(150) NOT NULL UNIQUE,
     address NVARCHAR(255),
-    location NVARCHAR(150) NOT NULL,
+    location NVARCHAR(150) NULL,
     phone VARCHAR(20),
     email VARCHAR(150) NOT NULL UNIQUE,
 
@@ -74,13 +74,13 @@ CREATE TABLE dbo.Doctors (
 
     full_name NVARCHAR(150) NOT NULL,
     phone VARCHAR(20),
-    license_number VARCHAR(50) NOT NULL UNIQUE,
+    license_number VARCHAR(50) NULL,
     gender VARCHAR(10),
 
-    specialist NVARCHAR(100) NOT NULL,
-    work_days NVARCHAR(100) NOT NULL, -- sun,mon,tue
-    work_from TIME NOT NULL,
-    work_to TIME NOT NULL,
+    specialist NVARCHAR(100) NULL,
+    work_days NVARCHAR(100) NULL, -- sun,mon,tue
+    work_from TIME NULL,
+    work_to TIME NULL,
 
     location NVARCHAR(150) NULL,
     consultation_price DECIMAL(10,2) NULL,
@@ -112,6 +112,11 @@ CREATE TABLE dbo.Doctors (
 );
 GO
 
+CREATE UNIQUE INDEX UX_Doctors_LicenseNumber
+ON dbo.Doctors(license_number)
+WHERE license_number IS NOT NULL;
+GO
+
 CREATE TABLE dbo.Patients (
     patient_id INT IDENTITY(1,1) PRIMARY KEY,
     user_id INT NOT NULL UNIQUE,
@@ -133,8 +138,6 @@ CREATE TABLE dbo.Staff (
     clinic_id INT NOT NULL,
 
     full_name NVARCHAR(150) NOT NULL,
-    role_title VARCHAR(20) NOT NULL
-        CHECK (role_title IN ('doctor', 'nurse', 'receptionist')),
     phone VARCHAR(20),
 
     specialist NVARCHAR(100) NULL,
@@ -153,41 +156,7 @@ CREATE TABLE dbo.Staff (
     CONSTRAINT FK_Staff_Clinics
         FOREIGN KEY (clinic_id)
         REFERENCES dbo.Clinics(clinic_id)
-        ON DELETE CASCADE,
-
-    CONSTRAINT CK_Staff_Doctor_Data
-        CHECK (
-            (
-                role_title = 'doctor'
-                AND specialist IN (
-                    N'مخ واعصاب',
-                    N'عظام',
-                    N'الأورام',
-                    N'طب الأذن والأنف والحنجرة',
-                    N'طب العيون',
-                    N'قلب و اوعية دموية',
-                    N'صدر و جهاز تنفسي',
-                    N'كلى',
-                    N'اسنان',
-                    N'اطفال و حديثي الولادة',
-                    N'جلدية',
-                    N'نسا و توليد'
-                )
-                AND work_days IS NOT NULL
-                AND work_from IS NOT NULL
-                AND work_to IS NOT NULL
-                AND consultation_price IS NOT NULL
-            )
-            OR
-            (
-                role_title <> 'doctor'
-                AND specialist IS NULL
-                AND work_days IS NULL
-                AND work_from IS NULL
-                AND work_to IS NULL
-                AND consultation_price IS NULL
-            )
-        )
+        ON DELETE CASCADE
 );
 GO
 

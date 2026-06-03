@@ -176,7 +176,9 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
         SELECT staff_id
         FROM dbo.Staff
         WHERE user_id = ${user_id}
-          AND role_title = 'doctor'
+          AND work_days IS NOT NULL
+          AND work_from IS NOT NULL
+          AND work_to IS NOT NULL
           AND is_verified = 1;
       `
     ).recordset[0];
@@ -482,7 +484,9 @@ exports.getBestDoctorsAndStaff = catchAsync(async (req, res) => {
       ) rt
 
       WHERE
-        s.role_title='doctor'
+        s.work_days IS NOT NULL
+        AND s.work_from IS NOT NULL
+        AND s.work_to IS NOT NULL
         AND s.is_verified=1
         AND su.is_active=1
         AND c.status='approved'

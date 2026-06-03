@@ -314,7 +314,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
   } else if (user_type === "staff") {
     const staff = (
       await sql.query`
-        SELECT role_title
+        SELECT staff_id
         FROM dbo.Staff
         WHERE user_id = ${user_id};
       `
@@ -322,8 +322,6 @@ exports.updateMe = catchAsync(async (req, res, next) => {
 
     if (!staff)
       return next(new AppError("Profile not found", 404));
-
-    const isStaffDoctor = staff.role_title === "doctor";
 
     let {
       full_name,
@@ -367,30 +365,15 @@ exports.updateMe = catchAsync(async (req, res, next) => {
           bio                 = COALESCE(${normalize(bio)}, bio),
           phone               = COALESCE(${normalize(phone)}, phone),
   
-          specialist          = COALESCE(
-            ${isStaffDoctor ? normalize(specialist) : null},
-            specialist
-          ),
-  
-          work_days           = COALESCE(
-            ${isStaffDoctor ? normalize(work_days) : null},
-            work_days
-          ),
-  
-          work_from           = COALESCE(
-            ${isStaffDoctor ? normalize(work_from) : null},
-            work_from
-          ),
-  
-          work_to             = COALESCE(
-            ${isStaffDoctor ? normalize(work_to) : null},
-            work_to
-          ),
-  
-          consultation_price  = COALESCE(
-            ${isStaffDoctor ? normalize(consultation_price) : null},
-            consultation_price
-          ),
+          specialist          = COALESCE(${normalize(specialist)}, specialist),
+
+          work_days           = COALESCE(${normalize(work_days)}, work_days),
+
+          work_from           = COALESCE(${normalize(work_from)}, work_from),
+
+          work_to             = COALESCE(${normalize(work_to)}, work_to),
+
+          consultation_price  = COALESCE(${normalize(consultation_price)}, consultation_price),
   
           location            = COALESCE(
             ${normalize(location)},
@@ -431,7 +414,6 @@ exports.updateMe = catchAsync(async (req, res, next) => {
         years_of_experience,
         bio,
         phone,
-        role_title,
         specialist,
         work_days,
         consultation_price,
