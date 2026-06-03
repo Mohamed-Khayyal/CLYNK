@@ -5,11 +5,15 @@ const AppError = require("../utilts/app.Error");
 
 const multerStorage = multer.memoryStorage();
 
+// Accept images and PDFs only
 const multerFilter = (req, file, cb) => {
-  if (file.mimetype.startsWith("image")) {
+  if (
+    file.mimetype.startsWith("image") ||
+    file.mimetype === "application/pdf"
+  ) {
     cb(null, true);
   } else {
-    cb(new AppError("Only image files are allowed", 400), false);
+    cb(new AppError("Only image files and PDFs are allowed", 400), false);
   }
 };
 
@@ -17,7 +21,7 @@ const upload = multer({
   storage: multerStorage,
   fileFilter: multerFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: 10 * 1024 * 1024, // 10 MB
   },
 });
 
@@ -26,16 +30,26 @@ exports.uploadSingle = (field) => upload.single(field);
 exports.uploadFields = (fields) => upload.fields(fields);
 
 const uploadBufferToCloudinary = async (file, folder) => {
+  const isPdf = file.mimetype === "application/pdf";
+  const uniqueId = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+
+  const uploadOptions = {
+    folder,
+    resource_type: "image",
+    public_id: uniqueId,
+    ...(isPdf
+      ? {}
+      : {
+          transformation: [
+            { quality: "auto" },
+            { fetch_format: "auto" },
+          ],
+        }),
+  };
+
   return cloudinary.uploader.upload(
     `data:${file.mimetype};base64,${file.buffer.toString("base64")}`,
-    {
-      folder,
-      resource_type: "image",
-      transformation: [
-        { quality: "auto" },
-        { fetch_format: "auto" },
-      ],
-    }
+    uploadOptions
   );
 };
 
@@ -46,7 +60,7 @@ exports.uploadToCloudinary = catchAsync(async (req, res, next) => {
 
   const folderMap = {
     photo: "CLYNK/photos",
-
+    licence: "CLYNK/licences",
   };
 
   if (req.file) {

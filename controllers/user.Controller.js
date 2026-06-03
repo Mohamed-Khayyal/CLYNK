@@ -53,7 +53,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
     profile = (
       await sql.query`
         SELECT
-        doctor_id,
+          doctor_id,
           full_name,
           phone,
           gender,
@@ -68,6 +68,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
           geo_location.Lat AS geo_location_latitude,
           geo_location.Long AS geo_location_longitude,
           is_verified,
+          licence,
           ISNULL(rs.total_ratings, 0) AS total_ratings,
           CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
         FROM dbo.Doctors d
@@ -102,6 +103,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
           s.geo_location.Long AS geo_location_longitude,
           s.is_verified,
           s.clinic_id,
+          s.licence,
           c.name AS clinic_name,
           c.location AS clinic_location,
           c.geo_location.Lat AS clinic_geo_location_latitude,
@@ -134,6 +136,7 @@ exports.getMe = catchAsync(async (req, res, next) => {
           phone,
           email,
           status,
+          licence,
           geo_location.Lat AS geo_location_latitude,
           geo_location.Long AS geo_location_longitude
         FROM dbo.Clinics
@@ -230,6 +233,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       specialist,
       work_days,
       location,
+      licence,
     } = data;
     const doctorGeoLocation = normalizeGeoLocation(getGeoLocationFromBody(data));
 
@@ -260,7 +264,8 @@ exports.updateMe = catchAsync(async (req, res, next) => {
           work_to             = COALESCE(${normalize(work_to)}, work_to),
           specialist          = COALESCE(${normalize(specialist)}, specialist),
           work_days           = COALESCE(${normalize(work_days)}, work_days),
-          location            = COALESCE(${normalize(location)}, location)
+          location            = COALESCE(${normalize(location)}, location),
+          licence             = COALESCE(${normalize(licence)}, licence)
         WHERE user_id = ${user_id};
       `;
 
@@ -299,6 +304,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
         geo_location.Lat AS geo_location_latitude,
         geo_location.Long AS geo_location_longitude,
         is_verified,
+        licence,
         ISNULL(rs.total_ratings, 0) AS total_ratings,
         CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
       FROM dbo.Doctors d
@@ -335,6 +341,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       consultation_price,
       phone,
       location,
+      licence,
     } = data;
 
     const staffGeoLocation =
@@ -364,22 +371,13 @@ exports.updateMe = catchAsync(async (req, res, next) => {
           years_of_experience = COALESCE(${normalize(years_of_experience)}, years_of_experience),
           bio                 = COALESCE(${normalize(bio)}, bio),
           phone               = COALESCE(${normalize(phone)}, phone),
-  
           specialist          = COALESCE(${normalize(specialist)}, specialist),
-
           work_days           = COALESCE(${normalize(work_days)}, work_days),
-
           work_from           = COALESCE(${normalize(work_from)}, work_from),
-
           work_to             = COALESCE(${normalize(work_to)}, work_to),
-
           consultation_price  = COALESCE(${normalize(consultation_price)}, consultation_price),
-  
-          location            = COALESCE(
-            ${normalize(location)},
-            location
-          )
-  
+          location            = COALESCE(${normalize(location)}, location),
+          licence             = COALESCE(${normalize(licence)}, licence)
         WHERE user_id = ${user_id};
       `;
 
@@ -418,21 +416,18 @@ exports.updateMe = catchAsync(async (req, res, next) => {
         work_days,
         consultation_price,
         location,
-  
-        CONVERT(VARCHAR(5), work_from,108) AS work_from,
-        CONVERT(VARCHAR(5), work_to,108) AS work_to,
-  
+        CONVERT(VARCHAR(5), work_from, 108) AS work_from,
+        CONVERT(VARCHAR(5), work_to, 108)   AS work_to,
         geo_location.Lat  AS geo_location_latitude,
         geo_location.Long AS geo_location_longitude,
-  
         clinic_id,
-        is_verified
-  
+        is_verified,
+        licence
       FROM dbo.Staff
       WHERE user_id = ${user_id};
     `;
   } else if (user_type === "clinic") {
-    let { name, address, location, phone, email } = data;
+    let { name, address, location, phone, email, licence } = data;
     const clinicGeoLocation = normalizeGeoLocation(getGeoLocationFromBody(data));
 
     name = normalize(name);
@@ -475,11 +470,12 @@ exports.updateMe = catchAsync(async (req, res, next) => {
       const result = await sql.query`
         UPDATE dbo.Clinics
         SET
-          name = COALESCE(CAST(${name} AS NVARCHAR(150)), name),
+          name    = COALESCE(CAST(${name} AS NVARCHAR(150)), name),
           address = COALESCE(CAST(${normalize(address)} AS NVARCHAR(255)), address),
           location = COALESCE(CAST(${normalize(location)} AS NVARCHAR(150)), location),
-          phone = COALESCE(${normalize(phone)}, phone),
-          email = COALESCE(${email}, email)
+          phone   = COALESCE(${normalize(phone)}, phone),
+          email   = COALESCE(${email}, email),
+          licence = COALESCE(${normalize(licence)}, licence)
         WHERE owner_user_id = ${user_id};
       `;
 
@@ -511,6 +507,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
         phone,
         email,
         status,
+        licence,
         geo_location.Lat AS geo_location_latitude,
         geo_location.Long AS geo_location_longitude
       FROM dbo.Clinics

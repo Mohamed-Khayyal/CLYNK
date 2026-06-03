@@ -171,6 +171,7 @@ const getDoctorProfileByUserId = async (userId) => {
         years_of_experience,
         bio,
         is_verified,
+        licence,
         ISNULL(rs.total_ratings, 0) AS total_ratings,
         CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
       FROM dbo.Doctors d
@@ -212,6 +213,7 @@ const getStaffProfileByUserId = async (userId) => {
         s.geo_location.Long AS geo_location_longitude,
         s.is_verified,
         s.clinic_id,
+        s.licence,
         c.name AS clinic_name,
         c.location AS clinic_location,
         c.geo_location.Lat AS clinic_geo_location_latitude,
@@ -305,7 +307,6 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
     if (user_type === "doctor") {
       const {
-        license_number,
         gender,
         phone,
         years_of_experience,
@@ -328,12 +329,12 @@ exports.signup = catchAsync(async (req, res, next) => {
       if (doctorGeoLocation) {
         const doctorResult = await transaction.request().query`
           INSERT INTO dbo.Doctors
-          (user_id, full_name, license_number, gender, phone, years_of_experience,
+          (user_id, full_name, gender, phone, years_of_experience,
            bio, consultation_price, specialist, work_days, work_from, work_to, location,
            geo_location)
           OUTPUT INSERTED.doctor_id
           VALUES
-          (${user.user_id}, ${full_name}, ${nullable(license_number)}, ${gender || null}, ${phone || null},
+          (${user.user_id}, ${full_name}, ${gender || null}, ${phone || null},
            ${nullable(years_of_experience)}, ${bio || null}, ${nullable(consultation_price)},
            ${specialist || null}, ${normalizedWorkDays}, ${work_from || null}, ${work_to || null}, ${location || null},
            geography::Point(${doctorGeoLocation.latitude}, ${doctorGeoLocation.longitude}, 4326));
@@ -342,12 +343,12 @@ exports.signup = catchAsync(async (req, res, next) => {
       } else {
         const doctorResult = await transaction.request().query`
           INSERT INTO dbo.Doctors
-          (user_id, full_name, license_number, gender, phone, years_of_experience,
+          (user_id, full_name, gender, phone, years_of_experience,
            bio, consultation_price, specialist, work_days, work_from, work_to, location,
            geo_location)
           OUTPUT INSERTED.doctor_id
           VALUES
-          (${user.user_id}, ${full_name}, ${nullable(license_number)}, ${gender || null}, ${phone || null},
+          (${user.user_id}, ${full_name}, ${gender || null}, ${phone || null},
            ${nullable(years_of_experience)}, ${bio || null}, ${nullable(consultation_price)},
            ${specialist || null}, ${normalizedWorkDays}, ${work_from || null}, ${work_to || null}, ${location || null},
            CAST(NULL AS GEOGRAPHY));
@@ -615,6 +616,7 @@ exports.login = catchAsync(async (req, res, next) => {
           phone,
           email,
           status,
+          licence,
           geo_location.Lat AS geo_location_latitude,
           geo_location.Long AS geo_location_longitude
         FROM dbo.Clinics

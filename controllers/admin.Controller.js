@@ -207,6 +207,7 @@ exports.getClinics = catchAsync(async (req, res) => {
           c.location,
           c.status,
           c.created_at,
+          c.licence,
           u.email AS owner_email,
           ISNULL(ss.total_staff, 0) AS total_staff,
           ISNULL(r.total_ratings, 0) AS total_ratings,
@@ -239,6 +240,7 @@ exports.getClinics = catchAsync(async (req, res) => {
           c.location,
           c.status,
           c.created_at,
+          c.licence,
           u.email AS owner_email,
           ISNULL(ss.total_staff, 0) AS total_staff,
           ISNULL(r.total_ratings, 0) AS total_ratings,
@@ -279,6 +281,7 @@ exports.getPendingClinics = catchAsync(async (req, res) => {
       c.location,
       c.status,
       c.created_at,
+      c.licence,
 
       u.email AS owner_email,
 
@@ -330,6 +333,7 @@ exports.getApprovedClinics = catchAsync(async (req, res) => {
       c.location,
       c.status,
       c.created_at,
+      c.licence,
 
       u.email AS owner_email,
 
@@ -573,6 +577,7 @@ exports.getAllDoctors = catchAsync(async (req, res) => {
       d.specialist,
       d.location,
       d.is_verified,
+      d.licence,
       u.photo,
       u.is_active,
 
@@ -630,6 +635,7 @@ exports.getVerifiedDoctors = catchAsync(async (req, res) => {
       d.specialist,
       d.location,
       d.is_verified,
+      d.licence,
       u.photo,
       u.is_active,
       ISNULL(bs.total_bookings, 0) AS total_bookings,
@@ -690,6 +696,7 @@ exports.getUnverifiedDoctors = catchAsync(async (req, res) => {
       d.specialist,
       d.location,
       d.is_verified,
+      d.licence,
       u.photo,
       u.is_active,
 

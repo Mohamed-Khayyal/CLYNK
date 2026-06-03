@@ -4,7 +4,7 @@ const router = express.Router();
 const auth = require("../middlewares/auth");
 const userController = require("../controllers/user.Controller");
 const {
-  uploadSingle,
+  uploadFields,
   uploadToCloudinary,
 } = require("../middlewares/upload.Cloudinary");
 
@@ -13,7 +13,10 @@ router.get("/me", auth.protect, userController.getMe);
 router.patch(
   "/me",
   auth.protect,
-  uploadSingle("photo"),
+  uploadFields([
+    { name: "photo", maxCount: 1 },
+    { name: "licence", maxCount: 1 },
+  ]),
   uploadToCloudinary,
   userController.updateMe,
 );
