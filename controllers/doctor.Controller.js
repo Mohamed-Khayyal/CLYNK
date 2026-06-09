@@ -154,13 +154,15 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
 exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   const user_id = req.user.user_id;
 
-  let doctor_id;
+  let doctor_id = null;
+  let staff_id = null;
   let profileType = "doctor";
+  let specialistName = "General";
 
   // search in Doctors table
   const doctor = (
     await sql.query`
-      SELECT doctor_id
+      SELECT doctor_id, specialist, full_name
       FROM dbo.Doctors
       WHERE user_id = ${user_id}
       AND is_verified = 1;
@@ -169,11 +171,12 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
 
   if (doctor) {
     doctor_id = doctor.doctor_id;
+    specialistName = doctor.specialist || "General";
   } else {
     // search in Staff table
     const staff = (
       await sql.query`
-        SELECT staff_id
+        SELECT staff_id, specialist, full_name
         FROM dbo.Staff
         WHERE user_id = ${user_id}
           AND work_days IS NOT NULL
@@ -185,134 +188,251 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
 
     if (!staff) return next(new AppError("Doctor profile not found", 404));
 
-    doctor_id = staff.staff_id;
+    staff_id = staff.staff_id;
     profileType = "staff";
+    specialistName = staff.specialist || "General";
   }
 
-  const stats = (
-    await sql.query`
-      SELECT
-        COUNT(*) AS total_bookings,
+  const request = new sql.Request();
+  request.input("providerId", sql.Int, doctor_id || staff_id);
+  const filterCol = doctor_id ? "b.doctor_id" : "b.staff_id";
 
-        COUNT(DISTINCT patient_user_id)
-        AS total_patients,
-
-        SUM(
-          CASE
-            WHEN status='confirmed'
-            THEN 1 ELSE 0
-          END
-        ) AS confirmed_bookings,
-
-        SUM(
-          CASE
-            WHEN status='cancelled'
-            THEN 1 ELSE 0
-          END
-        ) AS cancelled_bookings,
-
-        SUM(
-          CASE
-            WHEN booking_date =
-              CAST(GETDATE() AS DATE)
-             AND status='confirmed'
-            THEN 1 ELSE 0
-          END
-        ) AS today_bookings
-
-      FROM dbo.Bookings
-      WHERE doctor_id = ${doctor_id};
-    `
-  ).recordset[0];
-
-  const upcomingBookings = await sql.query`
-    SELECT TOP 5
+  const bookingsResult = await request.query(`
+    SELECT
       b.booking_id,
       b.booking_date,
-
-      CONVERT(
-        VARCHAR(5),
-        b.booking_from,
-        108
-      ) AS booking_from,
-
-      CONVERT(
-        VARCHAR(5),
-        b.booking_to,
-        108
-      ) AS booking_to,
-
+      CONVERT(VARCHAR(5), b.booking_from, 108) AS booking_from,
+      CONVERT(VARCHAR(5), b.booking_to, 108)   AS booking_to,
+      b.status,
+      b.prescription_access_status,
+      p.patient_id,
       p.full_name AS patient_name,
-      p.phone AS patient_phone,
-      b.status
-
+      p.phone     AS patient_phone,
+      p.gender    AS patient_gender,
+      COALESCE(d.full_name, s.full_name) AS doctor_name,
+      COALESCE(d.specialist, s.specialist) AS specialty,
+      pr.prescription_id,
+      pr.diagnosis
     FROM dbo.Bookings b
+    LEFT JOIN dbo.Patients p ON p.user_id = b.patient_user_id
+    LEFT JOIN dbo.Doctors d ON d.doctor_id = b.doctor_id
+    LEFT JOIN dbo.Staff s ON s.staff_id = b.staff_id
+    LEFT JOIN dbo.Prescriptions pr ON pr.booking_id = b.booking_id
+    WHERE ${filterCol} = @providerId
+    ORDER BY b.booking_date DESC, b.booking_from DESC;
+  `);
+  const bookings = bookingsResult.recordset;
 
-    JOIN dbo.Patients p
-      ON p.user_id =
-         b.patient_user_id
+  const ratingsQuery = doctor_id
+    ? sql.query`
+        SELECT
+          COUNT(*) AS total_ratings,
+          CAST(ISNULL(ROUND(AVG(CAST(rating AS FLOAT)), 1), 0) AS DECIMAL(3, 1)) AS average_rating
+        FROM dbo.Ratings
+        WHERE doctor_id = ${doctor_id};
+      `
+    : sql.query`
+        SELECT
+          COUNT(*) AS total_ratings,
+          CAST(ISNULL(ROUND(AVG(CAST(rating AS FLOAT)), 1), 0) AS DECIMAL(3, 1)) AS average_rating
+        FROM dbo.Ratings
+        WHERE staff_id = ${staff_id};
+      `;
+  const ratings = (await ratingsQuery).recordset[0];
 
-    WHERE b.doctor_id =
-      ${doctor_id}
+  const getFormattedDate = (dateValue) => {
+    if (!dateValue) return "";
+    const d = new Date(dateValue);
+    return isNaN(d.getTime()) ? String(dateValue) : d.toISOString().slice(0, 10);
+  };
 
-      AND b.status='confirmed'
+  const getBookingTime = (b) => b.booking_from || "";
 
-      AND b.booking_date >=
-      CAST(GETDATE() AS DATE)
+  const buildLastSevenDays = () => {
+    const today = new Date();
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(today);
+      date.setDate(today.getDate() - (6 - index));
+      return date.toISOString().slice(0, 10);
+    });
+  };
 
-    ORDER BY
-      b.booking_date,
-      b.booking_from;
-  `;
+  const buildWeeklyPatients = (bookingsList) => {
+    const last7Days = buildLastSevenDays();
+    return last7Days.map((dateStr) => {
+      const dayBookings = bookingsList.filter((b) => getFormattedDate(b.booking_date) === dateStr);
+      const seen = new Set();
+      
+      for (const b of bookingsList) {
+        const bDate = getFormattedDate(b.booking_date);
+        if (!b.patient_id || bDate >= dateStr) continue;
+        seen.add(b.patient_id);
+      }
 
-  const ratings = (
-    await sql.query`
-      SELECT
-        COUNT(*) AS total_ratings,
+      let newPatients = 0;
+      const returning = new Set();
 
-        CAST(
-          ISNULL(
-            ROUND(
-              AVG(
-                CAST(rating AS FLOAT)
-              ),
-              1
-            ),
-            0
-          )
+      for (const b of dayBookings) {
+        if (!b.patient_id) continue;
+        if (seen.has(b.patient_id)) {
+          returning.add(b.patient_id);
+        } else {
+          newPatients += 1;
+          seen.add(b.patient_id);
+        }
+      }
 
-        AS DECIMAL(3,1))
+      return {
+        date: dateStr,
+        exixiting: returning.size,
+        new: newPatients,
+      };
+    });
+  };
 
-        AS average_rating
+  const buildTrend = (total) => {
+    const safeTotal = Math.max(total, 1);
+    return Array.from({ length: 5 }, (_, index) => ({
+      value: Math.max(0, Math.round((safeTotal * (index + 1)) / 5)),
+    }));
+  };
 
-      FROM dbo.Ratings
+  const uniquePatientsSet = new Set();
+  const patientsMap = new Map();
+  bookings.forEach((b) => {
+    const key = b.patient_phone || b.patient_name || (b.patient_id ? String(b.patient_id) : "") || String(b.booking_id);
+    if (key) {
+      uniquePatientsSet.add(key);
+    }
+    if (b.patient_id) {
+      const existing = patientsMap.get(b.patient_id);
+      const bDate = getFormattedDate(b.booking_date);
+      const eDate = existing ? getFormattedDate(existing.booking_date) : "";
+      const bTime = getBookingTime(b);
+      const eTime = existing ? getBookingTime(existing) : "";
+      if (!existing || `${bDate} ${bTime}` > `${eDate} ${eTime}`) {
+        patientsMap.set(b.patient_id, b);
+      }
+    }
+  });
 
-      WHERE doctor_id =
-      ${doctor_id};
-    `
-  ).recordset[0];
+  const totalBookings = bookings.length;
+  const totalPatients = uniquePatientsSet.size;
+
+  const pendingBookings = bookings.filter((b) => b.status === "pending" || b.prescription_access_status === "pending");
+  const completedBookings = bookings.filter((b) => b.prescription_id !== null);
+  const cancelledBookings = bookings.filter((b) => b.status === "cancelled" || b.status === "rejected");
+  const cancellationRate = totalBookings > 0 ? Math.round((cancelledBookings.length / totalBookings) * 100) : 0;
+
+  const doctorObj = {
+    full_name: doctor ? doctor.full_name : (staff ? staff.full_name : "General"),
+    specialist: specialistName,
+    rating: Number(ratings.average_rating) || 0,
+    total_bookings: totalBookings,
+    pending_bookings: pendingBookings.length,
+    completed_bookings: completedBookings.length,
+  };
+
+  const appointmentRows = bookings.map((b) => ({
+    id: String(b.patient_id ?? b.booking_id),
+    name: b.patient_name || `Patient #${b.patient_id}`,
+    type: "زيارة",
+    doctor: b.doctor_name || doctorObj.full_name,
+    status: b.status || "confirmed",
+    date: [getFormattedDate(b.booking_date), getBookingTime(b)].filter(Boolean).join(", "),
+  }));
+
+  const appointmentRequests = bookings
+    .filter((b) => b.prescription_access_status === "pending")
+    .slice(0, 5)
+    .map((b) => ({
+      id: b.booking_id,
+      name: b.patient_name || `Patient #${b.patient_id}`,
+      specialty: b.specialty || specialistName || "General",
+      time: [getFormattedDate(b.booking_date), getBookingTime(b)].filter(Boolean).join(", "),
+      image: `https://i.pravatar.cc/40?u=${b.patient_id ?? b.booking_id}`,
+      status: "pending",
+    }));
+
+  const patientsList = Array.from(patientsMap.values()).map((b) => ({
+    id: b.patient_id,
+    name: b.patient_name || `Patient #${b.patient_id}`,
+    gender: b.patient_gender || "غير محدد",
+    department: b.specialty || specialistName || "General",
+    date: getFormattedDate(b.booking_date) || "",
+  }));
+
+  const reportsList = bookings
+    .filter((b) => b.prescription_id !== null)
+    .map((b) => ({
+      id: b.prescription_id,
+      name: b.patient_name || `Patient #${b.patient_id}`,
+      status: "available",
+      description: b.diagnosis || "روشتة طبية",
+    }));
+
+  const todayDateStr = new Date().toISOString().slice(0, 10);
+  const todayAppointmentsList = bookings
+    .filter((b) => getFormattedDate(b.booking_date) === todayDateStr)
+    .sort((a, b) => getBookingTime(a).localeCompare(getBookingTime(b)))
+    .map((b) => ({
+      id: b.booking_id,
+      name: b.patient_name || `Patient #${b.patient_id}`,
+      type: b.status || "confirmed",
+      date: getFormattedDate(b.booking_date),
+      time: getBookingTime(b),
+    }));
+
+  const genderStats = (() => {
+    const total = patientsList.length;
+    if (!total) return { male: 0, female: 0, total: 0 };
+    const male = patientsList.filter((p) =>
+      ["male", "m", "ذكر"].includes((p.gender || "").toLowerCase())
+    ).length;
+    const female = patientsList.filter((p) =>
+      ["female", "f", "أنثى", "انثى"].includes((p.gender || "").toLowerCase())
+    ).length;
+    return {
+      male: Math.round((male / total) * 100),
+      female: Math.round((female / total) * 100),
+      total: 100,
+    };
+  })();
+
+  const cards = {
+    appointments: {
+      value: totalBookings,
+      percentage: 0,
+      trend: buildTrend(totalBookings),
+    },
+    patients: {
+      value: totalPatients,
+      percentage: 0,
+      trend: buildTrend(totalPatients),
+    },
+  };
 
   res.status(200).json({
     status: "success",
-
     dashboard: {
       profile_type: profileType,
-
-      stats: {
-        total_bookings: stats.total_bookings || 0,
-
-        total_patients: stats.total_patients || 0,
-
-        confirmed_bookings: stats.confirmed_bookings || 0,
-
-        cancelled_bookings: stats.cancelled_bookings || 0,
-
-        today_bookings: stats.today_bookings || 0,
+      doctor: doctorObj,
+      totals: {
+        appointments: totalBookings,
+        patients: totalPatients,
+        pending: doctorObj.pending_bookings,
+        completed: doctorObj.completed_bookings,
+        rating: doctorObj.rating,
+        cancellationRate,
       },
-
-      ratings,
-
-      upcoming_bookings: upcomingBookings.recordset,
+      cards,
+      weeklyPatients: buildWeeklyPatients(bookings),
+      genderStats,
+      appointmentRequests,
+      appointments: appointmentRows,
+      patients: patientsList,
+      reports: reportsList,
+      todayAppointments: todayAppointmentsList,
     },
   });
 });

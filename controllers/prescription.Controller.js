@@ -527,8 +527,12 @@ exports.respondToPrescriptionAccess = catchAsync(async (req, res, next) => {
     return next(new AppError("Only confirmed bookings can receive prescription access approval", 400));
   }
 
-  if (booking.prescription_access_status !== "pending") {
-    return next(new AppError("There is no pending prescription access request for this booking", 400));
+  const currentStatus = booking.prescription_access_status;
+  const isRevocation = (currentStatus === "accepted" && nextStatus === "rejected");
+  const isReAcceptance = (currentStatus === "rejected" && nextStatus === "accepted");
+
+  if (currentStatus !== "pending" && !isRevocation && !isReAcceptance) {
+    return next(new AppError("No active prescription access request to respond to", 400));
   }
 
   const providerUserId =
