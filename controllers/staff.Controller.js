@@ -169,7 +169,8 @@ exports.getMyClinicStaff = catchAsync(async (req, res) => {
       s.specialist,
       s.is_verified,
       u.is_active,
-      u.photo
+      u.photo,
+      s.consultation_price
     FROM dbo.Staff s
     JOIN dbo.Users u
       ON s.user_id = u.user_id

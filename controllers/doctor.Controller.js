@@ -158,6 +158,7 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   let staff_id = null;
   let profileType = "doctor";
   let specialistName = "General";
+  let staff = null;
 
   // search in Doctors table
   const doctor = (
@@ -174,7 +175,7 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
     specialistName = doctor.specialist || "General";
   } else {
     // search in Staff table
-    const staff = (
+    staff = (
       await sql.query`
         SELECT staff_id, specialist, full_name
         FROM dbo.Staff

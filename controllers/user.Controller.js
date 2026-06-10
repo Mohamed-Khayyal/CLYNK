@@ -475,7 +475,10 @@ exports.updateMe = catchAsync(async (req, res, next) => {
           location = COALESCE(CAST(${normalize(location)} AS NVARCHAR(150)), location),
           phone   = COALESCE(${normalize(phone)}, phone),
           email   = COALESCE(${email}, email),
-          licence = COALESCE(${normalize(licence)}, licence)
+          licence = COALESCE(${normalize(licence)}, licence),
+          status  = 'pending',
+          verified_at = NULL,
+          verified_by_admin_id = NULL
         WHERE owner_user_id = ${user_id};
       `;
 

@@ -213,6 +213,8 @@ const assertPatientAvailability = async ({
   booking_date,
   booking_from,
   booking_to,
+  doctor_id,
+  staff_id,
 }) => {
   const timeConflict = await sql.query`
     SELECT booking_id
@@ -227,16 +229,26 @@ const assertPatientAvailability = async ({
     throw new AppError("Patient already has a booking at this time", 409);
   }
 
-  const dayConflict = await sql.query`
-    SELECT booking_id
-    FROM dbo.Bookings
-    WHERE patient_user_id = ${patient_user_id}
-      AND booking_date = ${booking_date}
-      AND status = 'confirmed';
-  `;
+  const dayConflict = doctor_id
+    ? await sql.query`
+        SELECT booking_id
+        FROM dbo.Bookings
+        WHERE patient_user_id = ${patient_user_id}
+          AND doctor_id = ${doctor_id}
+          AND booking_date = ${booking_date}
+          AND status = 'confirmed';
+      `
+    : await sql.query`
+        SELECT booking_id
+        FROM dbo.Bookings
+        WHERE patient_user_id = ${patient_user_id}
+          AND staff_id = ${staff_id}
+          AND booking_date = ${booking_date}
+          AND status = 'confirmed';
+      `;
 
   if (dayConflict.recordset.length) {
-    throw new AppError("Patient already has a booking for this day", 409);
+    throw new AppError("Patient already has a booking with this doctor today", 409);
   }
 };
 
@@ -292,6 +304,8 @@ const createBookingRecord = async ({
     booking_date,
     booking_from,
     booking_to,
+    doctor_id,
+    staff_id,
   });
 
   const target = await getBookingTarget({ doctor_id, staff_id });
@@ -626,7 +640,10 @@ exports.getClinicBookings = catchAsync(async (req, res, next) => {
 
   const bookings = await request.query(`
     SELECT
+      b.booking_id AS id,
       b.booking_id,
+      b.doctor_id,
+      b.staff_id,
       b.booking_date,
       CONVERT(VARCHAR(5), b.booking_from, 108) AS booking_from,
       CONVERT(VARCHAR(5), b.booking_to, 108)   AS booking_to,
