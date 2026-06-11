@@ -362,6 +362,8 @@ exports.signup = catchAsync(async (req, res, next) => {
   const accessToken = signAccessToken({ user_id: user._id, role: user.user_type });
   const refreshToken = signRefreshToken({ user_id: user._id });
 
+  req.user = user;
+
   sendAccessCookie(res, accessToken);
   sendRefreshCookie(res, refreshToken);
 
@@ -438,6 +440,8 @@ exports.login = catchAsync(async (req, res, next) => {
 
   const accessToken = signAccessToken({ user_id: user._id, role: user.user_type });
   const refreshToken = signRefreshToken({ user_id: user._id });
+
+  req.user = user;
 
   sendAccessCookie(res, accessToken);
   sendRefreshCookie(res, refreshToken);
