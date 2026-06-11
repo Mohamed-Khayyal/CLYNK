@@ -351,6 +351,9 @@ module.exports = (req, res, next) => {
     // Only audit routes under /api
     if (!req.originalUrl.startsWith("/api")) return;
 
+    // Skip logging refresh token endpoint
+    if (req.originalUrl.includes("/refresh")) return;
+
     // Fire-and-forget; never block or delay the response.
     (async () => {
       const requestIp = getRealIp(req);
