@@ -2,7 +2,6 @@ const http = require("http");
 const https = require("https");
 const net = require("net");
 const { logAuditEvent, sanitizeAuditBody } = require("../utilts/audit.Logger");
-const { sql } = require("../config/db.Config");
 
 // IP helpers
 
@@ -266,52 +265,42 @@ const buildIpLocation = (ipLocation, clientLocation, coordinateLocation) => {
 // Actor identity resolution
 
 /**
- * Fetch the actor's display name from the relevant profile table.
+ * Fetch the actor's display name from the relevant profile collection.
  * Returns null if the query fails or the user type is unknown.
  */
 const fetchActorName = async (user) => {
   if (!user?.user_id) return null;
 
   try {
-    let result;
-
     switch (user.user_type) {
-      case "patient":
-        result = await sql.query`
-          SELECT full_name FROM dbo.Patients WHERE user_id = ${user.user_id};
-        `;
-        break;
-
-      case "doctor":
-        result = await sql.query`
-          SELECT full_name FROM dbo.Doctors WHERE user_id = ${user.user_id};
-        `;
-        break;
-
-      case "staff":
-        result = await sql.query`
-          SELECT full_name FROM dbo.Staff WHERE user_id = ${user.user_id};
-        `;
-        break;
-
-      case "admin":
-        result = await sql.query`
-          SELECT full_name FROM dbo.Admins WHERE user_id = ${user.user_id};
-        `;
-        break;
-
-      case "clinic":
-        result = await sql.query`
-          SELECT name AS full_name FROM dbo.Clinics
-          WHERE owner_user_id = ${user.user_id};
-        `;
-        break;
-
+      case "patient": {
+        const Patient = require("../models/Patient.model");
+        const p = await Patient.findOne({ user_id: user.user_id }).select("full_name").lean();
+        return p?.full_name || null;
+      }
+      case "doctor": {
+        const Doctor = require("../models/Doctor.model");
+        const d = await Doctor.findOne({ user_id: user.user_id }).select("full_name").lean();
+        return d?.full_name || null;
+      }
+      case "staff": {
+        const Staff = require("../models/Staff.model");
+        const s = await Staff.findOne({ user_id: user.user_id }).select("full_name").lean();
+        return s?.full_name || null;
+      }
+      case "admin": {
+        const Admin = require("../models/Admin.model");
+        const a = await Admin.findOne({ user_id: user.user_id }).select("full_name").lean();
+        return a?.full_name || null;
+      }
+      case "clinic": {
+        const Clinic = require("../models/Clinic.model");
+        const c = await Clinic.findOne({ owner_user_id: user.user_id }).select("name").lean();
+        return c?.name || null;
+      }
       default:
         return null;
     }
-
-    return result?.recordset?.[0]?.full_name || null;
   } catch {
     return null;
   }

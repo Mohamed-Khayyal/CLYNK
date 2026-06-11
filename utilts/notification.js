@@ -1,8 +1,5 @@
-const { sql } = require("../config/db.Config");
+const Notification = require("../models/Notification.model");
 
 exports.createNotification = async ({ user_id, title, message }) => {
-  await sql.query`
-    INSERT INTO dbo.Notifications (user_id, title, message)
-    VALUES (${user_id}, ${title}, ${message});
-  `;
+  await Notification.create({ user_id, title, message });
 };

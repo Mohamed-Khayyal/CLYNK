@@ -1,1089 +1,453 @@
 const bcrypt = require("bcryptjs");
-const { sql } = require("../config/db.Config");
-const catchAsync = require("../utilts/catch.Async");
+const mongoose = require("mongoose");
 const AppError = require("../utilts/app.Error");
+const catchAsync = require("../utilts/catch.Async");
 const { createNotification } = require("../utilts/notification");
+
+const User = require("../models/User.model");
+const Admin = require("../models/Admin.model");
+const Doctor = require("../models/Doctor.model");
+const Staff = require("../models/Staff.model");
+const Clinic = require("../models/Clinic.model");
+const Patient = require("../models/Patient.model");
+const Booking = require("../models/Booking.model");
+const Rating = require("../models/Rating.model");
+
+const parseId = (value) => {
+  if (!value || !mongoose.Types.ObjectId.isValid(value)) return null;
+  return value;
+};
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 
 const getAdminUserId = (req, next) => {
   const adminUserId = req.user?.user_id;
-
-  if (!adminUserId) {
-    next(new AppError("Admin authentication is required", 401));
-    return null;
-  }
-
+  if (!adminUserId) { next(new AppError("Admin authentication is required", 401)); return null; }
   return adminUserId;
+};
+
+const getRatingsForEntity = async (matchField) => {
+  const agg = await Rating.aggregate([
+    { $match: matchField },
+    { $group: { _id: null, total: { $sum: 1 }, avg: { $avg: "$rating" } } },
+  ]);
+  if (!agg.length) return { total_ratings: 0, average_rating: 0 };
+  return { total_ratings: agg[0].total, average_rating: Math.round(agg[0].avg * 10) / 10 };
 };
 
 exports.createAdmin = catchAsync(async (req, res, next) => {
   const { email, password, full_name, name } = req.body;
   const adminName = full_name || name;
 
-  if (!email || !password || !adminName) {
-    return next(
-      new AppError("Name, email, and password are required", 400),
-    );
-  }
+  if (!email || !password || !adminName) return next(new AppError("Name, email, and password are required", 400));
+  if (!EMAIL_REGEX.test(email)) return next(new AppError("Invalid email format", 400));
 
-  if (!EMAIL_REGEX.test(email)) {
-    return next(new AppError("Invalid email format", 400));
-  }
-
-  const exists = await sql.query`
-    SELECT user_id FROM dbo.Users WHERE email = ${email};
-  `;
-
-  if (exists.recordset.length) {
-    return next(new AppError("Email is already in use", 409));
-  }
+  const exists = await User.findOne({ email });
+  if (exists) return next(new AppError("Email is already in use", 409));
 
   const hashedPassword = await bcrypt.hash(password, 12);
-  const transaction = new sql.Transaction(sql.globalConnectionPool);
-  let transactionStarted = false;
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
   try {
-    await transaction.begin();
-    transactionStarted = true;
+    const [newUser] = await User.create([{ email, password: hashedPassword, user_type: "admin" }], { session });
+    await Admin.create([{ user_id: newUser._id, full_name: adminName }], { session });
+    await session.commitTransaction();
 
-    const userResult = await transaction.request().query`
-      INSERT INTO dbo.Users (email, password, user_type)
-      OUTPUT INSERTED.user_id
-      VALUES (${email}, ${hashedPassword}, 'admin');
-    `;
-
-    const userId = userResult.recordset[0].user_id;
-
-    await transaction.request().query`
-      INSERT INTO dbo.Admins (user_id, full_name)
-      VALUES (${userId}, ${adminName});
-    `;
-
-    await transaction.commit();
-
-    res.status(201).json({
-      status: "success",
-      user: {
-        user_id: userId,
-        email,
-        role: "admin",
-      },
-    });
+    res.status(201).json({ status: "success", user: { user_id: newUser._id, email, role: "admin" } });
   } catch (err) {
-    if (transactionStarted) {
-      try {
-        await transaction.rollback();
-      } catch (rollbackErr) {
-        console.error(
-          "Failed to roll back admin creation transaction:",
-          rollbackErr.message,
-        );
-      }
-    }
+    await session.abortTransaction();
+    session.endSession();
     next(err);
   }
+  session.endSession();
 });
 
 exports.getAllAdmins = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      a.admin_id,
-      a.user_id,
-      u.email,
-      a.full_name,
-      u.photo,
-      u.is_active,
-      u.created_at
-    FROM dbo.Admins a
-    JOIN dbo.Users u
-      ON u.user_id = a.user_id
-    ORDER BY a.admin_id DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    admins: result.recordset,
-  });
+  const admins = await Admin.find().populate("user_id", "email photo is_active created_at").sort({ _id: -1 }).lean();
+  const result = admins.map((a) => ({
+    admin_id: a._id,
+    user_id: a.user_id?._id,
+    email: a.user_id?.email,
+    full_name: a.full_name,
+    photo: a.user_id?.photo,
+    is_active: a.user_id?.is_active,
+    created_at: a.user_id?.created_at,
+  }));
+  res.status(200).json({ status: "success", results: result.length, admins: result });
 });
 
-exports.deleteUser = catchAsync(async (req, res, next) => {
-  const userId = Number(req.params.id);
-
-  if (!Number.isInteger(userId) || userId <= 0) {
-    return next(new AppError("Invalid user id", 400));
-  }
-
-  if (userId === req.user.user_id) {
-    return next(new AppError("You cannot deactivate your own account", 400));
-  }
-
-  const user = (
-    await sql.query`
-      SELECT user_id, email, user_type, is_active
-      FROM dbo.Users
-      WHERE user_id = ${userId};
-    `
-  ).recordset[0];
-
+const resolveUser = async (id) => {
+  let user = await User.findById(id).lean();
   if (!user) {
-    return next(new AppError("User not found", 404));
+    const entity = await Doctor.findById(id).lean() || 
+                   await Clinic.findById(id).lean() || 
+                   await Patient.findById(id).lean() || 
+                   await Staff.findById(id).lean() ||
+                   await Admin.findById(id).lean();
+    if (entity && entity.user_id) {
+      user = await User.findById(entity.user_id).lean();
+    }
   }
+  return user;
+};
 
-  if (!user.is_active) {
-    return next(new AppError("User is already inactive", 400));
-  }
+exports.deleteUser = catchAsync(async (req, res, next) => {
+  const userId = parseId(req.params.id);
+  if (!userId) return next(new AppError("Invalid user id", 400));
 
-  await sql.query`
-    UPDATE dbo.Users
-    SET is_active = 0
-    WHERE user_id = ${userId};
-  `;
+  const user = await resolveUser(userId);
+  if (!user) return next(new AppError("User not found", 404));
+  if (String(user._id) === String(req.user.user_id)) return next(new AppError("You cannot deactivate your own account", 400));
+  if (!user.is_active) return next(new AppError("User is already inactive", 400));
 
-  res.status(200).json({
-    status: "success",
-    message: "User deactivated successfully",
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.user_type,
-      is_active: false,
-    },
-  });
+  await User.findByIdAndUpdate(user._id, { is_active: false });
+  res.status(200).json({ status: "success", message: "User deactivated successfully", user: { user_id: user._id, email: user.email, role: user.user_type, is_active: false } });
 });
 
 exports.undeleteUser = catchAsync(async (req, res, next) => {
-  const userId = Number(req.params.id);
+  const userId = parseId(req.params.id);
+  if (!userId) return next(new AppError("Invalid user id", 400));
+  
+  const user = await resolveUser(userId);
+  if (!user) return next(new AppError("User not found", 404));
+  if (user.is_active) return next(new AppError("User is already active", 400));
 
-  if (!Number.isInteger(userId) || userId <= 0) {
-    return next(new AppError("Invalid user id", 400));
-  }
-
-  const user = (
-    await sql.query`
-      SELECT user_id, email, user_type, is_active
-      FROM dbo.Users
-      WHERE user_id = ${userId};
-    `
-  ).recordset[0];
-
-  if (!user) {
-    return next(new AppError("User not found", 404));
-  }
-
-  if (user.is_active) {
-    return next(new AppError("User is already active", 400));
-  }
-
-  await sql.query`
-    UPDATE dbo.Users
-    SET is_active = 1
-    WHERE user_id = ${userId};
-  `;
-
-  res.status(200).json({
-    status: "success",
-    message: "User reactivated successfully",
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.user_type,
-      is_active: true,
-    },
-  });
+  await User.findByIdAndUpdate(user._id, { is_active: true });
+  res.status(200).json({ status: "success", message: "User activated successfully", user: { user_id: user._id, email: user.email, role: user.user_type, is_active: true } });
 });
+
+const buildClinicList = async (filter) => {
+  const clinics = await Clinic.find(filter).populate("owner_user_id", "email").sort({ _id: -1 }).lean();
+
+  return Promise.all(clinics.map(async (c) => {
+    const total_staff = await Staff.countDocuments({ clinic_id: c._id });
+    const ratingData = await getRatingsForEntity({ clinic_id: c._id });
+    return {
+      _id: c._id,
+      id: c._id,
+      clinic_id: c._id,
+      name: c.name,
+      email: c.email,
+      phone: c.phone,
+      location: c.location,
+      status: c.status,
+      created_at: c.created_at,
+      licence: c.licence,
+      owner_email: c.owner_user_id?.email,
+      total_staff,
+      ...ratingData,
+    };
+  }));
+};
 
 exports.getClinics = catchAsync(async (req, res) => {
   const { status } = req.query;
-
-  const result = status
-    ? await sql.query`
-        SELECT
-          c.clinic_id,
-          c.name,
-          c.email,
-          c.phone,
-          c.location,
-          c.status,
-          c.created_at,
-          c.licence,
-          u.email AS owner_email,
-          ISNULL(ss.total_staff, 0) AS total_staff,
-          ISNULL(r.total_ratings, 0) AS total_ratings,
-          CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-        FROM dbo.Clinics c
-        JOIN dbo.Users u ON c.owner_user_id = u.user_id
-        OUTER APPLY (
-          SELECT COUNT(*) AS total_staff
-          FROM dbo.Staff s
-          JOIN dbo.Users su
-            ON su.user_id = s.user_id
-          WHERE s.clinic_id = c.clinic_id
-            AND su.is_active = 1
-        ) ss
-        OUTER APPLY (
-          SELECT
-            COUNT(*) AS total_ratings,
-            ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
-          FROM dbo.Ratings rt
-          WHERE rt.clinic_id = c.clinic_id
-        ) r
-        WHERE c.status = ${status};
-      `
-    : await sql.query`
-        SELECT
-          c.clinic_id,
-          c.name,
-          c.email,
-          c.phone,
-          c.location,
-          c.status,
-          c.created_at,
-          c.licence,
-          u.email AS owner_email,
-          ISNULL(ss.total_staff, 0) AS total_staff,
-          ISNULL(r.total_ratings, 0) AS total_ratings,
-          CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-        FROM dbo.Clinics c
-        JOIN dbo.Users u ON c.owner_user_id = u.user_id
-        OUTER APPLY (
-          SELECT COUNT(*) AS total_staff
-          FROM dbo.Staff s
-          JOIN dbo.Users su
-            ON su.user_id = s.user_id
-          WHERE s.clinic_id = c.clinic_id
-            AND su.is_active = 1
-        ) ss
-        OUTER APPLY (
-          SELECT
-            COUNT(*) AS total_ratings,
-            ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
-          FROM dbo.Ratings rt
-          WHERE rt.clinic_id = c.clinic_id
-        ) r;
-      `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    clinics: result.recordset,
-  });
+  const filter = status ? { status } : {};
+  const clinics = await buildClinicList(filter);
+  res.status(200).json({ status: "success", results: clinics.length, clinics });
 });
 
 exports.getPendingClinics = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      c.clinic_id,
-      c.name,
-      c.email,
-      c.phone,
-      c.location,
-      c.status,
-      c.created_at,
-      c.licence,
-
-      u.email AS owner_email,
-
-      ISNULL(ss.total_staff, 0) AS total_staff,
-      ISNULL(r.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
-
-    FROM dbo.Clinics c
-
-    JOIN dbo.Users u
-      ON c.owner_user_id = u.user_id
-
-    OUTER APPLY (
-      SELECT COUNT(*) AS total_staff
-      FROM dbo.Staff s
-      JOIN dbo.Users su
-        ON su.user_id = s.user_id
-      WHERE s.clinic_id = c.clinic_id
-        AND su.is_active = 1
-    ) ss
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings rt
-      WHERE rt.clinic_id = c.clinic_id
-    ) r
-
-    WHERE c.status = 'pending'
-
-    ORDER BY c.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    clinics: result.recordset,
-  });
+  const clinics = await buildClinicList({ status: "pending" });
+  res.status(200).json({ status: "success", results: clinics.length, clinics });
 });
 
 exports.getApprovedClinics = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      c.clinic_id,
-      c.name,
-      c.email,
-      c.phone,
-      c.location,
-      c.status,
-      c.created_at,
-      c.licence,
-
-      u.email AS owner_email,
-
-      ISNULL(ss.total_staff, 0) AS total_staff,
-      ISNULL(r.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(r.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
-
-    FROM dbo.Clinics c
-
-    JOIN dbo.Users u
-      ON c.owner_user_id = u.user_id
-
-    OUTER APPLY (
-      SELECT COUNT(*) AS total_staff
-      FROM dbo.Staff s
-      JOIN dbo.Users su
-        ON su.user_id = s.user_id
-      WHERE s.clinic_id = c.clinic_id
-        AND su.is_active = 1
-    ) ss
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(rt.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings rt
-      WHERE rt.clinic_id = c.clinic_id
-    ) r
-
-    WHERE c.status = 'approved'
-
-    ORDER BY c.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    clinics: result.recordset,
-  });
+  const clinics = await buildClinicList({ status: "approved" });
+  res.status(200).json({ status: "success", results: clinics.length, clinics });
 });
 
 exports.approveClinic = catchAsync(async (req, res, next) => {
-  const clinicId = Number(req.params.id);
+  const clinicId = parseId(req.params.id);
+  if (!clinicId) return next(new AppError("Invalid clinic id", 400));
   const adminUserId = getAdminUserId(req, next);
+  if (!adminUserId) return;
 
-  if (!adminUserId) {
-    return;
+  const admin = await Admin.findOne({ user_id: adminUserId }).lean();
+  if (!admin) return next(new AppError("Admin privileges are required", 403));
+
+  let clinic = await Clinic.findById(clinicId).lean();
+  if (!clinic) clinic = await Clinic.findOne({ user_id: clinicId }).lean();
+  if (!clinic) return next(new AppError("Clinic not found", 404));
+
+  if (clinic.status === "approved") {
+    return next(new AppError("Clinic is already approved", 400));
   }
 
-  if (!clinicId) {
-    return next(new AppError("Invalid clinic id", 400));
-  }
-
-  const admin = (
-    await sql.query`
-      SELECT admin_id FROM dbo.Admins WHERE user_id = ${adminUserId};
-    `
-  ).recordset[0];
-
-  if (!admin) {
-    return next(new AppError("Admin privileges are required", 403));
-  }
-
-  const clinic = (
-    await sql.query`
-      SELECT clinic_id, status, owner_user_id
-      FROM dbo.Clinics
-      WHERE clinic_id = ${clinicId};
-    `
-  ).recordset[0];
-
-  if (!clinic) {
-    return next(new AppError("Clinic not found", 404));
-  }
-
-  if (clinic.status !== "pending" && clinic.status !== "rejected") {
-    return next(
-      new AppError("Only clinics with pending status can be approved", 400),
-    );
-  }
-
-  await sql.query`
-    UPDATE dbo.Clinics
-    SET
-      status = 'approved',
-      verified_by_admin_id = ${admin.admin_id},
-      verified_at = SYSDATETIME()
-    WHERE clinic_id = ${clinicId};
-  `;
-
-  await createNotification({
-    user_id: clinic.owner_user_id,
-    title: "تم اعتماد العيادة",
-    message: "تم اعتماد عيادتك وأصبحت متاحة الآن.",
+  await Clinic.findByIdAndUpdate(clinic._id, { 
+    status: "approved",
+    verified_by_admin_id: admin._id,
+    verified_at: new Date()
   });
 
-  res.status(200).json({
-    status: "success",
-    message: "تم اعتماد العيادة بنجاح",
-  });
+  await createNotification({ user_id: clinic.owner_user_id, title: "تم اعتماد العيادة", message: "تم اعتماد عيادتك وأصبحت متاحة الآن." });
+
+  res.status(200).json({ status: "success", message: "تم اعتماد العيادة بنجاح" });
 });
 
 exports.rejectClinic = catchAsync(async (req, res, next) => {
-  const clinicId = Number(req.params.id);
+  const clinicId = parseId(req.params.id);
+  if (!clinicId) return next(new AppError("Invalid clinic id", 400));
   const adminUserId = getAdminUserId(req, next);
-
   if (!adminUserId) return;
 
-  if (!Number.isInteger(clinicId) || clinicId <= 0) {
-    return next(new AppError("Invalid clinic id", 400));
-  }
+  const admin = await Admin.findOne({ user_id: adminUserId }).lean();
+  if (!admin) return next(new AppError("Admin privileges required", 403));
 
-  const admin = (
-    await sql.query`
-      SELECT admin_id
-      FROM dbo.Admins
-      WHERE user_id = ${adminUserId};
-    `
-  ).recordset[0];
+  let clinic = await Clinic.findById(clinicId).lean();
+  if (!clinic) clinic = await Clinic.findOne({ user_id: clinicId }).lean();
+  if (!clinic) return next(new AppError("Clinic not found", 404));
+  if (clinic.status !== "pending" && clinic.status !== "approved") return next(new AppError("Only pending or approved clinics can be rejected", 400));
 
-  if (!admin) {
-    return next(new AppError("Admin privileges required", 403));
-  }
+  await Clinic.findByIdAndUpdate(clinic._id, { status: "rejected", verified_by_admin_id: null, verified_at: null });
+  await createNotification({ user_id: clinic.owner_user_id, title: "تم رفض العيادة", message: "تم رفض طلب التحقق من العيادة، يرجى مراجعة البيانات وإعادة التقديم." });
 
-  const clinic = (
-    await sql.query`
-      SELECT clinic_id,status,owner_user_id
-      FROM dbo.Clinics
-      WHERE clinic_id = ${clinicId};
-    `
-  ).recordset[0];
-
-  if (!clinic) {
-    return next(new AppError("Clinic not found", 404));
-  }
-
-  if (clinic.status !== "pending" && clinic.status !== "approved") {
-    return next(
-      new AppError("Only pending or approved clinics can be rejected", 400),
-    );
-  }
-
-  await sql.query`
-    UPDATE dbo.Clinics
-    SET
-      status='rejected',
-      verified_by_admin_id=NULL,
-      verified_at=NULL
-    WHERE clinic_id=${clinicId};
-  `;
-
-  await createNotification({
-    user_id: clinic.owner_user_id,
-    title: "تم رفض العيادة",
-    message:
-      "تم رفض طلب التحقق من العيادة، يرجى مراجعة البيانات وإعادة التقديم.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "Clinic rejected successfully",
-  });
+  res.status(200).json({ status: "success", message: "Clinic rejected successfully" });
 });
 
 exports.unverifyClinic = catchAsync(async (req, res, next) => {
-  const clinicId = Number(req.params.id);
+  const clinicId = parseId(req.params.id);
+  if (!clinicId) return next(new AppError("Invalid clinic id", 400));
   const adminUserId = getAdminUserId(req, next);
-
   if (!adminUserId) return;
 
-  if (!Number.isInteger(clinicId) || clinicId <= 0) {
-    return next(new AppError("Invalid clinic id", 400));
-  }
+  const admin = await Admin.findOne({ user_id: adminUserId }).lean();
+  if (!admin) return next(new AppError("Admin privileges required", 403));
 
-  const admin = (
-    await sql.query`
-      SELECT admin_id
-      FROM dbo.Admins
-      WHERE user_id=${adminUserId};
-    `
-  ).recordset[0];
+  let clinic = await Clinic.findById(clinicId).lean();
+  if (!clinic) clinic = await Clinic.findOne({ user_id: clinicId }).lean();
+  if (!clinic) return next(new AppError("Clinic not found", 404));
+  if (clinic.status !== "approved" && clinic.status !== "rejected") return next(new AppError("Only approved or rejected clinics can be unverified", 400));
 
-  if (!admin) {
-    return next(new AppError("Admin privileges required", 403));
-  }
+  await Clinic.findByIdAndUpdate(clinic._id, { status: "pending", verified_by_admin_id: null, verified_at: null });
+  await createNotification({ user_id: clinic.owner_user_id, title: "تم إلغاء التحقق من العيادة", message: "تم إلغاء اعتماد العيادة وعادت للمراجعة مرة أخرى." });
 
-  const clinic = (
-    await sql.query`
-      SELECT clinic_id,status,owner_user_id
-      FROM dbo.Clinics
-      WHERE clinic_id=${clinicId};
-    `
-  ).recordset[0];
-
-  if (!clinic) {
-    return next(new AppError("Clinic not found", 404));
-  }
-
-  if (clinic.status !== "approved" && clinic.status !== "rejected") {
-    return next(
-      new AppError("Only approved or rejected clinics can be unverified", 400),
-    );
-  }
-
-  await sql.query`
-    UPDATE dbo.Clinics
-    SET
-      status='pending',
-      verified_by_admin_id=NULL,
-      verified_at=NULL
-    WHERE clinic_id=${clinicId};
-  `;
-
-  await createNotification({
-    user_id: clinic.owner_user_id,
-    title: "تم إلغاء التحقق من العيادة",
-    message: "تم إلغاء اعتماد العيادة وعادت للمراجعة مرة أخرى.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "Clinic unverified successfully",
-  });
+  res.status(200).json({ status: "success", message: "Clinic unverified successfully" });
 });
 
+const buildDoctorList = async (filter) => {
+  const doctors = await Doctor.find(filter)
+    .populate("user_id", "email photo is_active created_at")
+    .sort({ _id: -1 })
+    .lean();
+
+  return Promise.all(doctors.map(async (d) => {
+    const bookingAgg = await Booking.aggregate([
+      { $match: { doctor_id: d._id, status: "confirmed" } },
+      { $group: { _id: null, total: { $sum: 1 }, patients: { $addToSet: "$patient_user_id" } } },
+    ]);
+    const total_bookings = bookingAgg[0]?.total || 0;
+    const total_patients = bookingAgg[0]?.patients?.length || 0;
+    const ratings = await getRatingsForEntity({ doctor_id: d._id });
+
+    return {
+      _id: d._id,
+      id: d._id,
+      doctor_id: d._id,
+      phone: d.phone,
+      user_id: d.user_id?._id,
+      email: d.user_id?.email,
+      full_name: d.full_name,
+      gender: d.gender,
+      years_of_experience: d.years_of_experience,
+      bio: d.bio,
+      consultation_price: d.consultation_price,
+      work_from: d.work_from,
+      work_to: d.work_to,
+      work_days: d.work_days,
+      specialist: d.specialist,
+      location: d.location,
+      is_verified: d.is_verified,
+      licence: d.licence,
+      photo: d.user_id?.photo,
+      is_active: d.user_id?.is_active,
+      total_bookings,
+      total_patients,
+      ...ratings,
+    };
+  }));
+};
+
 exports.getAllDoctors = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      d.doctor_id,
-      phone,
-      d.user_id,
-      u.email,
-      d.full_name,
-      d.gender,
-      d.years_of_experience,
-      d.bio,
-      d.consultation_price,
-      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
-      d.work_days,
-      d.specialist,
-      d.location,
-      d.is_verified,
-      d.licence,
-      u.photo,
-      u.is_active,
-
-      ISNULL(bs.total_bookings, 0) AS total_bookings,
-      ISNULL(bs.total_patients, 0) AS total_patients,
-      ISNULL(rs.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
-
-    FROM dbo.Doctors d
-
-    JOIN dbo.Users u
-      ON d.user_id = u.user_id
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_bookings,
-        COUNT(DISTINCT b.patient_user_id) AS total_patients
-      FROM dbo.Bookings b
-      WHERE b.doctor_id = d.doctor_id
-        AND b.status = 'confirmed'
-    ) bs
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings r
-      WHERE r.doctor_id = d.doctor_id
-    ) rs
-
-    ORDER BY u.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    doctors: result.recordset,
-  });
+  const doctors = await buildDoctorList({});
+  res.status(200).json({ status: "success", results: doctors.length, doctors });
 });
 
 exports.getVerifiedDoctors = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      d.doctor_id,
-      d.user_id,
-      u.email,
-      d.full_name,
-      d.gender,
-      d.years_of_experience,
-      d.bio,
-      d.consultation_price,
-      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
-      d.work_days,
-      d.specialist,
-      d.location,
-      d.is_verified,
-      d.licence,
-      u.photo,
-      u.is_active,
-      ISNULL(bs.total_bookings, 0) AS total_bookings,
-      ISNULL(bs.total_patients, 0) AS total_patients,
-      ISNULL(rs.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-
-    FROM dbo.Doctors d
-
-    JOIN dbo.Users u
-      ON d.user_id = u.user_id
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_bookings,
-        COUNT(DISTINCT b.patient_user_id) AS total_patients
-      FROM dbo.Bookings b
-      WHERE b.doctor_id = d.doctor_id
-        AND b.status = 'confirmed'
-    ) bs
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings r
-      WHERE r.doctor_id = d.doctor_id
-    ) rs
-
-    WHERE
-      d.is_verified = 1
-    ORDER BY
-      ISNULL(bs.total_bookings, 0) DESC,
-      u.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    doctors: result.recordset,
-  });
+  const doctors = await buildDoctorList({ is_verified: true });
+  res.status(200).json({ status: "success", results: doctors.length, doctors });
 });
 
 exports.getUnverifiedDoctors = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      d.doctor_id,
-      d.user_id,
-      u.email,
-      d.full_name,
-      d.gender,
-      d.years_of_experience,
-      d.bio,
-      d.consultation_price,
-      CONVERT(VARCHAR(5), d.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), d.work_to, 108)   AS work_to,
-      d.work_days,
-      d.specialist,
-      d.location,
-      d.is_verified,
-      d.licence,
-      u.photo,
-      u.is_active,
-
-      ISNULL(rs.total_ratings, 0) AS total_ratings,
-      CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3,1)) AS average_rating
-
-    FROM dbo.Doctors d
-
-    JOIN dbo.Users u
-      ON d.user_id = u.user_id
-
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_ratings,
-        ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-      FROM dbo.Ratings r
-      WHERE r.doctor_id = d.doctor_id
-    ) rs
-
-    WHERE d.is_verified = 0
-
-    ORDER BY u.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    doctors: result.recordset,
-  });
+  const doctors = await buildDoctorList({ is_verified: false });
+  res.status(200).json({ status: "success", results: doctors.length, doctors });
 });
 
 exports.verifyDoctor = catchAsync(async (req, res, next) => {
-  const doctorId = Number(req.params.id);
+  const doctorId = parseId(req.params.id);
+  if (!doctorId) return next(new AppError("Invalid doctor id", 400));
   const adminUserId = getAdminUserId(req, next);
+  if (!adminUserId) return;
 
-  if (!adminUserId) {
-    return;
-  }
+  const admin = await Admin.findOne({ user_id: adminUserId }).lean();
+  if (!admin) return next(new AppError("Admin privileges are required", 403));
 
-  if (!doctorId) {
-    return next(new AppError("Invalid doctor id", 400));
-  }
+  let doctor = await Doctor.findById(doctorId).lean();
+  if (!doctor) doctor = await Doctor.findOne({ user_id: doctorId }).lean();
+  if (!doctor) return next(new AppError("Doctor not found", 404));
+  if (doctor.is_verified) return next(new AppError("Doctor is already verified", 400));
 
-  const admin = (
-    await sql.query`
-      SELECT admin_id FROM dbo.Admins WHERE user_id = ${adminUserId};
-    `
-  ).recordset[0];
+  await Doctor.findByIdAndUpdate(doctor._id, { is_verified: true });
+  await createNotification({ user_id: doctor.user_id, title: "تم توثيق حساب الطبيب", message: "تم توثيق حسابك كطبيب. يمكنك الآن استقبال الحجوزات." });
 
-  if (!admin) {
-    return next(new AppError("Admin privileges are required", 403));
-  }
-
-  const doctor = (
-    await sql.query`
-      SELECT doctor_id, user_id, is_verified
-      FROM dbo.Doctors
-      WHERE doctor_id = ${doctorId};
-    `
-  ).recordset[0];
-
-  if (!doctor) {
-    return next(new AppError("Doctor not found", 404));
-  }
-
-  if (doctor.is_verified) {
-    return next(new AppError("Doctor is already verified", 400));
-  }
-
-  await sql.query`
-    UPDATE dbo.Doctors
-    SET is_verified = 1
-    WHERE doctor_id = ${doctorId};
-  `;
-
-  await createNotification({
-    user_id: doctor.user_id,
-    title: "تم توثيق حساب الطبيب",
-    message: "تم توثيق حسابك كطبيب. يمكنك الآن استقبال الحجوزات.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "تم توثيق الطبيب بنجاح",
-  });
+  res.status(200).json({ status: "success", message: "تم توثيق الطبيب بنجاح" });
 });
 
 exports.unverifyDoctor = catchAsync(async (req, res, next) => {
-  const doctorId = Number(req.params.id);
+  const doctorId = parseId(req.params.id);
+  if (!doctorId) return next(new AppError("Invalid doctor id", 400));
   const adminUserId = getAdminUserId(req, next);
+  if (!adminUserId) return;
 
-  if (!adminUserId) {
-    return;
-  }
+  const admin = await Admin.findOne({ user_id: adminUserId }).lean();
+  if (!admin) return next(new AppError("Admin privileges are required", 403));
 
-  if (!doctorId) {
-    return next(new AppError("Invalid doctor id", 400));
-  }
+  let doctor = await Doctor.findById(doctorId).lean();
+  if (!doctor) doctor = await Doctor.findOne({ user_id: doctorId }).lean();
+  if (!doctor) return next(new AppError("Doctor not found", 404));
+  if (!doctor.is_verified) return next(new AppError("Doctor is already unverified", 400));
 
-  const admin = (
-    await sql.query`
-      SELECT admin_id FROM dbo.Admins WHERE user_id = ${adminUserId};
-    `
-  ).recordset[0];
+  await Doctor.findByIdAndUpdate(doctor._id, { is_verified: false });
+  await createNotification({ user_id: doctor.user_id, title: "تم إلغاء توثيق حساب الطبيب", message: "تم إلغاء توثيق حسابك كطبيب. يرجى التواصل مع الدعم للمساعدة." });
 
-  if (!admin) {
-    return next(new AppError("Admin privileges are required", 403));
-  }
-
-  const doctor = (
-    await sql.query`
-      SELECT doctor_id, user_id, is_verified
-      FROM dbo.Doctors
-      WHERE doctor_id = ${doctorId};
-    `
-  ).recordset[0];
-
-  if (!doctor) {
-    return next(new AppError("Doctor not found", 404));
-  }
-
-  if (!doctor.is_verified) {
-    return next(new AppError("Doctor is already unverified", 400));
-  }
-
-  await sql.query`
-    UPDATE dbo.Doctors
-    SET is_verified = 0
-    WHERE doctor_id = ${doctorId};
-  `;
-
-  await createNotification({
-    user_id: doctor.user_id,
-    title: "تم إلغاء توثيق حساب الطبيب",
-    message: "تم إلغاء توثيق حسابك كطبيب. يرجى التواصل مع الدعم للمساعدة.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "تم إلغاء توثيق الطبيب بنجاح",
-  });
+  res.status(200).json({ status: "success", message: "تم إلغاء توثيق الطبيب بنجاح" });
 });
+
+const buildStaffList = async (filter) => {
+  const staffList = await Staff.find(filter)
+    .populate("user_id", "email photo is_active")
+    .populate("clinic_id", "name status location owner_user_id")
+    .sort({ _id: -1 })
+    .lean();
+
+  return staffList.map((s) => ({
+    _id: s._id,
+    id: s._id,
+    staff_id: s._id,
+    user_id: s.user_id?._id,
+    email: s.user_id?.email,
+    full_name: s.full_name,
+    specialist: s.specialist,
+    work_days: s.work_days,
+    work_from: s.work_from,
+    work_to: s.work_to,
+    consultation_price: s.consultation_price,
+    is_verified: s.is_verified,
+    is_active: s.user_id?.is_active,
+    photo: s.user_id?.photo,
+    clinic_id: s.clinic_id?._id,
+    clinic_name: s.clinic_id?.name,
+    clinic_status: s.clinic_id?.status,
+    clinic_location: s.clinic_id?.location,
+    owner_user_id: s.clinic_id?.owner_user_id,
+  }));
+};
 
 exports.getAllStaff = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      s.staff_id,
-      s.user_id,
-      u.email,
-      s.full_name,
-      s.specialist,
-      s.work_days,
-      CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
-      s.consultation_price,
-      s.is_verified,
-      u.is_active,
-      u.photo,
-      c.clinic_id,
-      c.name AS clinic_name,
-      c.status AS clinic_status,
-      c.location AS clinic_location,
-      c.owner_user_id,
-      owner_u.email AS clinic_owner_email
-    FROM dbo.Staff s
-    JOIN dbo.Users u
-      ON u.user_id = s.user_id
-    JOIN dbo.Clinics c
-      ON c.clinic_id = s.clinic_id
-    JOIN dbo.Users owner_u
-      ON owner_u.user_id = c.owner_user_id
-    ORDER BY c.clinic_id DESC, s.staff_id DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    staff: result.recordset,
-  });
-});
-
-exports.getAllPatients = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      p.patient_id,
-      p.user_id,
-      u.email,
-      p.full_name,
-      p.phone,
-      p.gender,
-      u.is_active,
-      u.photo,
-      ISNULL(pb.total_bookings, 0) AS total_bookings,
-      ISNULL(pb.upcoming_bookings, 0) AS upcoming_bookings
-    FROM dbo.Patients p
-    JOIN dbo.Users u
-      ON u.user_id = p.user_id
-    OUTER APPLY (
-      SELECT
-        COUNT(*) AS total_bookings,
-        COUNT(CASE WHEN b.booking_date >= CAST(GETDATE() AS DATE) THEN 1 END) AS upcoming_bookings
-      FROM dbo.Bookings b
-      WHERE b.patient_user_id = p.user_id
-    ) pb
-    ORDER BY p.patient_id DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    patients: result.recordset,
-  });
+  const staff = await buildStaffList({});
+  res.status(200).json({ status: "success", results: staff.length, staff });
 });
 
 exports.getVerifiedStaff = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      s.staff_id,
-      s.user_id,
-      u.email,
-      s.full_name,
-      s.specialist,
-      s.work_days,
-      CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
-      s.consultation_price,
-      s.is_verified,
-      u.is_active,
-      u.zphoto,
-
-      c.clinic_id,
-      c.name AS clinic_name,
-      c.status AS clinic_status,
-      c.location AS clinic_location
-
-    FROM dbo.Staff s
-    JOIN dbo.Users u
-      ON u.user_id = s.user_id
-    JOIN dbo.Clinics c
-      ON c.clinic_id = s.clinic_id
-
-    WHERE s.is_verified = 1
-
-    ORDER BY s.staff_id DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    staff: result.recordset,
-  });
+  const staff = await buildStaffList({ is_verified: true });
+  res.status(200).json({ status: "success", results: staff.length, staff });
 });
 
 exports.getUnverifiedStaff = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      s.staff_id,
-      s.user_id,
-      u.email,
-      s.full_name,
-      s.specialist,
-      s.work_days,
-      CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
-      CONVERT(VARCHAR(5), s.work_to, 108)   AS work_to,
-      s.consultation_price,
-      s.is_verified,
-      u.is_active,
-      u.photo,
+  const staff = await buildStaffList({ is_verified: false });
+  res.status(200).json({ status: "success", results: staff.length, staff });
+});
 
-      c.clinic_id,
-      c.name AS clinic_name,
-      c.status AS clinic_status,
-      c.location AS clinic_location
+exports.getAllPatients = catchAsync(async (req, res) => {
+  const patients = await Patient.find()
+    .populate("user_id", "email photo is_active")
+    .sort({ _id: -1 })
+    .lean();
 
-    FROM dbo.Staff s
-    JOIN dbo.Users u
-      ON u.user_id = s.user_id
-    JOIN dbo.Clinics c
-      ON c.clinic_id = s.clinic_id
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
 
-    WHERE s.is_verified = 0
+  const result = await Promise.all(patients.map(async (p) => {
+    const bookings = await Booking.find({ patient_user_id: p.user_id._id }).lean();
+    const total_bookings = bookings.length;
+    const upcoming_bookings = bookings.filter((b) => b.booking_date >= todayStr).length;
+    return {
+      _id: p._id,
+      id: p._id,
+      patient_id: p._id,
+      user_id: p.user_id?._id,
+      email: p.user_id?.email,
+      full_name: p.full_name,
+      phone: p.phone,
+      gender: p.gender,
+      is_active: p.user_id?.is_active,
+      photo: p.user_id?.photo,
+      total_bookings,
+      upcoming_bookings,
+    };
+  }));
 
-    ORDER BY s.staff_id DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    staff: result.recordset,
-  });
+  res.status(200).json({ status: "success", results: result.length, patients: result });
 });
 
 exports.getAllBookings = catchAsync(async (req, res) => {
-  const result = await sql.query`
-    SELECT
-      b.booking_id,
-      b.booking_date,
-      CONVERT(VARCHAR(5), b.booking_from, 108) AS booking_from,
-      CONVERT(VARCHAR(5), b.booking_to, 108) AS booking_to,
-      CONCAT(
-        CONVERT(VARCHAR(10), b.booking_date, 120),
-        ' ',
-        CONVERT(VARCHAR(5), b.booking_from, 108)
-      ) AS date_time,
-      b.status,
+  const bookings = await Booking.find()
+    .populate({ path: "patient_user_id", model: "User" })
+    .populate({ path: "doctor_id", model: "Doctor", select: "full_name specialist" })
+    .populate({ path: "staff_id", model: "Staff", select: "full_name specialist clinic_id" })
+    .sort({ booking_date: -1, booking_from: -1 })
+    .lean();
 
-      COALESCE(d.full_name, s.full_name) AS doctor_name,
-      CASE
-        WHEN b.staff_id IS NOT NULL THEN N'عيادة'
-        ELSE N'طبيب'
-      END AS session_type,
+  const result = await Promise.all(bookings.map(async (b) => {
+    let clinic_name = null;
+    let clinic_id = null;
+    if (b.staff_id?.clinic_id) {
+      const clinic = await Clinic.findById(b.staff_id.clinic_id).select("name").lean();
+      clinic_name = clinic?.name;
+      clinic_id = clinic?._id;
+    }
+    const patient = await Patient.findOne({ user_id: b.patient_user_id?._id }).lean();
+    return {
+      booking_id: b._id,
+      booking_date: b.booking_date,
+      booking_from: b.booking_from,
+      booking_to: b.booking_to,
+      date_time: `${b.booking_date} ${b.booking_from}`,
+      status: b.status,
+      doctor_name: b.doctor_id?.full_name || b.staff_id?.full_name || null,
+      session_type: b.staff_id ? "عيادة" : "طبيب",
+      patient_id: patient?._id || null,
+      patient_name: patient?.full_name || null,
+      patient_number: patient?.phone || null,
+      clinic_id,
+      clinic_name,
+    };
+  }));
 
-      p.patient_id,
-      p.full_name AS patient_name,
-      p.phone AS patient_number,
-
-      c.clinic_id,
-      c.name AS clinic_name
-
-    FROM dbo.Bookings b
-
-    JOIN dbo.Patients p
-      ON p.user_id = b.patient_user_id
-
-    LEFT JOIN dbo.Doctors d
-      ON d.doctor_id = b.doctor_id
-
-    LEFT JOIN dbo.Staff s
-      ON s.staff_id = b.staff_id
-
-    LEFT JOIN dbo.Clinics c
-      ON c.clinic_id = s.clinic_id
-
-    ORDER BY b.booking_date DESC, b.booking_from DESC, b.created_at DESC;
-  `;
-
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    bookings: result.recordset,
-  });
+  res.status(200).json({ status: "success", results: result.length, bookings: result });
 });
 
 exports.adminStats = catchAsync(async (req, res) => {
-  const doctorsQuery = await sql.query(`
-      SELECT COUNT(*) AS count
-      FROM dbo.Doctors
-  `);
-
-  const staffQuery = await sql.query(`
-      SELECT COUNT(*) AS count
-      FROM dbo.Staff
-  `);
-
-  const clinicsQuery = await sql.query(`
-      SELECT COUNT(*) AS count
-      FROM dbo.Clinics
-  `);
-
-  const patientsQuery = await sql.query(`
-      SELECT COUNT(*) AS count
-      FROM dbo.Patients
-  `);
-
-  const [doctors, staff, clinics, patients] = await Promise.all([
-    doctorsQuery,
-    staffQuery,
-    clinicsQuery,
-    patientsQuery,
+  const [totalDoctors, totalStaff, totalClinics, totalPatients] = await Promise.all([
+    Doctor.countDocuments(),
+    Staff.countDocuments(),
+    Clinic.countDocuments(),
+    Patient.countDocuments(),
   ]);
-
-  const totalDoctors = doctors.recordset[0].count;
-
-  const totalStaff = staff.recordset[0].count;
-
-  const totalClinics = clinics.recordset[0].count;
-
-  const totalPatients = patients.recordset[0].count;
 
   res.status(200).json({
     status: "success",
-    data: {
-      totalDoctors,
-      totalStaff,
-      totalClinics,
-      totalPatients,
-      totalMedicalUsers: totalDoctors + totalStaff,
-    },
+    data: { totalDoctors, totalStaff, totalClinics, totalPatients, totalMedicalUsers: totalDoctors + totalStaff },
   });
 });

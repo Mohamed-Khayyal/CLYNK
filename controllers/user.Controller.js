@@ -1,11 +1,14 @@
-const { sql } = require("../config/db.Config");
-const catchAsync = require("../utilts/catch.Async");
 const AppError = require("../utilts/app.Error");
-const {
-  attachGeoLocation,
-  getGeoLocationFromBody,
-  normalizeGeoLocation,
-} = require("../utilts/geo.Location");
+const catchAsync = require("../utilts/catch.Async");
+const { normalizeGeoLocation, getGeoLocationFromBody } = require("../utilts/geo.Location");
+
+const User = require("../models/User.model");
+const Doctor = require("../models/Doctor.model");
+const Patient = require("../models/Patient.model");
+const Clinic = require("../models/Clinic.model");
+const Staff = require("../models/Staff.model");
+const Admin = require("../models/Admin.model");
+const Rating = require("../models/Rating.model");
 
 const normalize = (value) => {
   if (value === undefined || value === null) return null;
@@ -20,148 +23,124 @@ const NAME_REGEX = /^[\p{L}\s.'-]{2,150}$/u;
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
 
+const getRatings = async ({ doctor_id, staff_id }) => {
+  const matchField = doctor_id ? { doctor_id } : { staff_id };
+  const agg = await Rating.aggregate([
+    { $match: matchField },
+    { $group: { _id: null, total: { $sum: 1 }, avg: { $avg: "$rating" } } },
+  ]);
+  if (!agg.length) return { total_ratings: 0, average_rating: 0 };
+  return { total_ratings: agg[0].total, average_rating: Math.round(agg[0].avg * 10) / 10 };
+};
+
+const buildGeoField = (geo_location) => {
+  const normalized = normalizeGeoLocation(geo_location);
+  if (!normalized) return null;
+  return { type: "Point", coordinates: [normalized.longitude, normalized.latitude] };
+};
+
+const formatGeo = (geo_location) => {
+  if (!geo_location || !geo_location.coordinates || geo_location.coordinates.length !== 2) return null;
+  return { latitude: geo_location.coordinates[1], longitude: geo_location.coordinates[0] };
+};
+
 exports.getMe = catchAsync(async (req, res, next) => {
-  const { user_id } = req.user;
+  const { user_id, user_type } = req.user;
 
-  const userResult = await sql.query`
-    SELECT email, user_type, is_active, photo
-    FROM dbo.Users
-    WHERE user_id = ${user_id};
-  `;
+  const user = await User.findById(user_id).lean();
+  if (!user) return next(new AppError("User not found", 404));
 
-  if (!userResult.recordset.length) {
-    return next(new AppError("User not found", 404));
-  }
-
-  const { email, user_type, is_active, photo } = userResult.recordset[0];
   let profile = null;
 
   if (user_type === "patient") {
-    profile = (
-      await sql.query`
-        SELECT
-          patient_id,
-          full_name,
-          CONVERT(VARCHAR(10), date_of_birth, 120) AS date_of_birth,
-          gender,
-          phone
-        FROM dbo.Patients
-        WHERE user_id = ${user_id};
-      `
-    ).recordset[0];
+    const patient = await Patient.findOne({ user_id }).lean();
+    if (patient) {
+      profile = {
+        patient_id: patient._id,
+        full_name: patient.full_name,
+        date_of_birth: patient.date_of_birth ? new Date(patient.date_of_birth).toISOString().slice(0, 10) : null,
+        gender: patient.gender,
+        phone: patient.phone,
+      };
+    }
   } else if (user_type === "doctor") {
-    profile = (
-      await sql.query`
-        SELECT
-          doctor_id,
-          full_name,
-          phone,
-          gender,
-          years_of_experience,
-          bio,
-          consultation_price,
-          CONVERT(VARCHAR(5), work_from, 108) AS work_from,
-          CONVERT(VARCHAR(5), work_to, 108)   AS work_to,
-          specialist,
-          work_days,
-          location,
-          geo_location.Lat AS geo_location_latitude,
-          geo_location.Long AS geo_location_longitude,
-          is_verified,
-          licence,
-          ISNULL(rs.total_ratings, 0) AS total_ratings,
-          CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-        FROM dbo.Doctors d
-        OUTER APPLY (
-          SELECT
-            COUNT(*) AS total_ratings,
-            ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-          FROM dbo.Ratings r
-          WHERE r.doctor_id = d.doctor_id
-        ) rs
-        WHERE d.user_id = ${user_id};
-      `
-    ).recordset[0];
-    attachGeoLocation(profile);
+    const doctor = await Doctor.findOne({ user_id }).lean();
+    if (doctor) {
+      const ratings = await getRatings({ doctor_id: doctor._id });
+      profile = {
+        doctor_id: doctor._id,
+        full_name: doctor.full_name,
+        phone: doctor.phone,
+        gender: doctor.gender,
+        years_of_experience: doctor.years_of_experience,
+        bio: doctor.bio,
+        consultation_price: doctor.consultation_price,
+        work_from: doctor.work_from,
+        work_to: doctor.work_to,
+        specialist: doctor.specialist,
+        work_days: doctor.work_days,
+        location: doctor.location,
+        geo_location: formatGeo(doctor.geo_location),
+        is_verified: doctor.is_verified,
+        licence: doctor.licence,
+        ...ratings,
+      };
+    }
   } else if (user_type === "staff") {
-    profile = (
-      await sql.query`
-        SELECT
-          staff_id,
-          s.full_name,
-          s.years_of_experience,
-          s.bio,
-          s.gender,
-          s.specialist,
-          s.work_days,
-          CONVERT(VARCHAR(5), s.work_from, 108) AS work_from,
-          CONVERT(VARCHAR(5), s.work_to, 108) AS work_to,
-          s.consultation_price,
-          s.phone,
-          s.location,
-          s.geo_location.Lat AS geo_location_latitude,
-          s.geo_location.Long AS geo_location_longitude,
-          s.is_verified,
-          s.clinic_id,
-          s.licence,
-          c.name AS clinic_name,
-          c.location AS clinic_location,
-          c.geo_location.Lat AS clinic_geo_location_latitude,
-          c.geo_location.Long AS clinic_geo_location_longitude,
-          ISNULL(rs.total_ratings, 0) AS total_ratings,
-          CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-        FROM dbo.Staff s
-        JOIN dbo.Clinics c
-          ON c.clinic_id = s.clinic_id
-        OUTER APPLY (
-          SELECT
-            COUNT(*) AS total_ratings,
-            ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-          FROM dbo.Ratings r
-          WHERE r.staff_id = s.staff_id
-        ) rs
-        WHERE s.user_id = ${user_id};
-      `
-    ).recordset[0];
-    attachGeoLocation(profile);
-    attachGeoLocation(profile, { targetKey: "clinic_geo_location" });
+    const staff = await Staff.findOne({ user_id }).populate("clinic_id", "name location geo_location").lean();
+    if (staff) {
+      const ratings = await getRatings({ staff_id: staff._id });
+      profile = {
+        staff_id: staff._id,
+        full_name: staff.full_name,
+        years_of_experience: staff.years_of_experience,
+        bio: staff.bio,
+        gender: staff.gender,
+        specialist: staff.specialist,
+        work_days: staff.work_days,
+        work_from: staff.work_from,
+        work_to: staff.work_to,
+        consultation_price: staff.consultation_price,
+        phone: staff.phone,
+        location: staff.location,
+        geo_location: formatGeo(staff.geo_location),
+        is_verified: staff.is_verified,
+        clinic_id: staff.clinic_id?._id || null,
+        licence: staff.licence,
+        clinic_name: staff.clinic_id?.name || null,
+        clinic_location: staff.clinic_id?.location || null,
+        clinic_geo_location: formatGeo(staff.clinic_id?.geo_location),
+        ...ratings,
+      };
+    }
   } else if (user_type === "clinic") {
-    profile = (
-      await sql.query`
-        SELECT
-          clinic_id,
-          name,
-          address,
-          location,
-          phone,
-          email,
-          status,
-          licence,
-          geo_location.Lat AS geo_location_latitude,
-          geo_location.Long AS geo_location_longitude
-        FROM dbo.Clinics
-        WHERE owner_user_id = ${user_id};
-      `
-    ).recordset[0];
-    attachGeoLocation(profile);
+    const clinic = await Clinic.findOne({ owner_user_id: user_id }).lean();
+    if (clinic) {
+      profile = {
+        clinic_id: clinic._id,
+        name: clinic.name,
+        address: clinic.address,
+        location: clinic.location,
+        phone: clinic.phone,
+        email: clinic.email,
+        status: clinic.status,
+        licence: clinic.licence,
+        geo_location: formatGeo(clinic.geo_location),
+      };
+    }
   } else if (user_type === "admin") {
-    profile = (
-      await sql.query`
-        SELECT admin_id, full_name
-        FROM dbo.Admins
-        WHERE user_id = ${user_id};
-      `
-    ).recordset[0];
+    const admin = await Admin.findOne({ user_id }).lean();
+    if (admin) profile = { admin_id: admin._id, full_name: admin.full_name };
   }
 
   res.status(200).json({
     status: "success",
     user: {
       user_id,
-      email,
+      email: user.email,
       role: user_type,
-      is_active,
-      photo,
+      is_active: user.is_active,
+      photo: user.photo,
       profile,
     },
   });
@@ -177,442 +156,247 @@ exports.updateMe = catchAsync(async (req, res, next) => {
 
   let photo;
   if (data.photo) {
-    await sql.query`
-      UPDATE dbo.Users
-      SET photo = ${data.photo}
-      WHERE user_id = ${user_id};
-    `;
+    await User.findByIdAndUpdate(user_id, { photo: data.photo });
     photo = data.photo;
   } else {
-    const current = await sql.query`
-      SELECT photo FROM dbo.Users WHERE user_id = ${user_id};
-    `;
-    photo = current.recordset[0]?.photo || null;
+    const current = await User.findById(user_id).select("photo").lean();
+    photo = current?.photo || null;
   }
-
-  let updateProfile;
-  let selectProfile;
 
   if (user_type === "patient") {
     let { full_name, date_of_birth, gender, phone } = data;
-
     full_name = normalize(full_name);
-    if (full_name && !NAME_REGEX.test(full_name)) {
-      return next(new AppError("Invalid full_name value", 400));
-    }
+    if (full_name && !NAME_REGEX.test(full_name)) return next(new AppError("Invalid full_name value", 400));
 
-    updateProfile = () => sql.query`
-      UPDATE dbo.Patients
-      SET
-        full_name     = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
-        date_of_birth = COALESCE(${normalize(date_of_birth)}, date_of_birth),
-        gender        = COALESCE(${normalize(gender)}, gender),
-        phone         = COALESCE(${normalize(phone)}, phone)
-      WHERE user_id = ${user_id};
-    `;
+    const update = {};
+    if (full_name) update.full_name = full_name;
+    if (normalize(date_of_birth)) update.date_of_birth = normalize(date_of_birth);
+    if (normalize(gender)) update.gender = normalize(gender);
+    if (normalize(phone)) update.phone = normalize(phone);
 
-    selectProfile = () => sql.query`
-      SELECT
-        full_name,
-        CONVERT(VARCHAR(10), date_of_birth, 120) AS date_of_birth,
-        gender,
-        phone
-      FROM dbo.Patients
-      WHERE user_id = ${user_id};
-    `;
-  } else if (user_type === "doctor") {
-    let {
-      full_name,
-      gender,
-      years_of_experience,
-      bio,
-      consultation_price,
-      phone,
-      work_from,
-      work_to,
-      specialist,
-      work_days,
-      location,
-      licence,
-    } = data;
+    const updated = await Patient.findOneAndUpdate({ user_id }, update, { new: true }).lean();
+    if (!updated) return next(new AppError("Profile not found", 404));
+
+    return res.status(200).json({
+      status: "success",
+      message: "تم تحديث الملف الشخصي بنجاح",
+      photo,
+      profile: {
+        full_name: updated.full_name,
+        date_of_birth: updated.date_of_birth ? new Date(updated.date_of_birth).toISOString().slice(0, 10) : null,
+        gender: updated.gender,
+        phone: updated.phone,
+      },
+    });
+  }
+
+  if (user_type === "doctor") {
+    let { full_name, gender, years_of_experience, bio, consultation_price, phone, work_from, work_to, specialist, work_days, location, licence } = data;
     const doctorGeoLocation = normalizeGeoLocation(getGeoLocationFromBody(data));
 
     full_name = normalize(full_name);
-    if (full_name && !NAME_REGEX.test(full_name)) {
-      return next(new AppError("Invalid full_name value", 400));
-    }
-
-    if (work_from && !TIME_REGEX.test(work_from))
-      return next(new AppError("Invalid work_from format", 400));
-
-    if (work_to && !TIME_REGEX.test(work_to))
-      return next(new AppError("Invalid work_to format", 400));
-
+    if (full_name && !NAME_REGEX.test(full_name)) return next(new AppError("Invalid full_name value", 400));
+    if (work_from && !TIME_REGEX.test(work_from)) return next(new AppError("Invalid work_from format", 400));
+    if (work_to && !TIME_REGEX.test(work_to)) return next(new AppError("Invalid work_to format", 400));
     if (Array.isArray(work_days)) work_days = work_days.join(",");
 
-    updateProfile = async () => {
-      const result = await sql.query`
-        UPDATE dbo.Doctors
-        SET
-          full_name           = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
-          gender              = COALESCE(${normalize(gender)}, gender),
-          years_of_experience = COALESCE(${normalize(years_of_experience)}, years_of_experience),
-          bio                 = COALESCE(${normalize(bio)}, bio),
-          consultation_price  = COALESCE(${normalize(consultation_price)}, consultation_price),
-          phone               = COALESCE(${normalize(phone)}, phone),
-          work_from           = COALESCE(${normalize(work_from)}, work_from),
-          work_to             = COALESCE(${normalize(work_to)}, work_to),
-          specialist          = COALESCE(${normalize(specialist)}, specialist),
-          work_days           = COALESCE(${normalize(work_days)}, work_days),
-          location            = COALESCE(${normalize(location)}, location),
-          licence             = COALESCE(${normalize(licence)}, licence)
-        WHERE user_id = ${user_id};
-      `;
-
-      if (doctorGeoLocation !== undefined && result.rowsAffected[0] > 0) {
-        if (doctorGeoLocation) {
-          await sql.query`
-            UPDATE dbo.Doctors
-            SET geo_location = geography::Point(${doctorGeoLocation.latitude}, ${doctorGeoLocation.longitude}, 4326)
-            WHERE user_id = ${user_id};
-          `;
-        } else {
-          await sql.query`
-            UPDATE dbo.Doctors
-            SET geo_location = NULL
-            WHERE user_id = ${user_id};
-          `;
-        }
-      }
-
-      return result;
-    };
-
-    selectProfile = () => sql.query`
-      SELECT
-        full_name,
-        gender,
-        years_of_experience,
-        bio,
-        consultation_price,
-        phone,
-        CONVERT(VARCHAR(5), work_from, 108) AS work_from,
-        CONVERT(VARCHAR(5), work_to, 108)   AS work_to,
-        specialist,
-        work_days,
-        location,
-        geo_location.Lat AS geo_location_latitude,
-        geo_location.Long AS geo_location_longitude,
-        is_verified,
-        licence,
-        ISNULL(rs.total_ratings, 0) AS total_ratings,
-        CAST(ISNULL(rs.average_rating, 0) AS DECIMAL(3, 1)) AS average_rating
-      FROM dbo.Doctors d
-      OUTER APPLY (
-        SELECT
-          COUNT(*) AS total_ratings,
-          ROUND(AVG(CAST(r.rating AS FLOAT)), 1) AS average_rating
-        FROM dbo.Ratings r
-        WHERE r.doctor_id = d.doctor_id
-      ) rs
-      WHERE d.user_id = ${user_id};
-    `;
-  } else if (user_type === "staff") {
-    const staff = (
-      await sql.query`
-        SELECT staff_id
-        FROM dbo.Staff
-        WHERE user_id = ${user_id};
-      `
-    ).recordset[0];
-
-    if (!staff)
-      return next(new AppError("Profile not found", 404));
-
-    let {
-      full_name,
-      gender,
-      years_of_experience,
-      bio,
-      specialist,
-      work_days,
-      work_from,
-      work_to,
-      consultation_price,
-      phone,
-      location,
-      licence,
-    } = data;
-
-    const staffGeoLocation =
-      normalizeGeoLocation(getGeoLocationFromBody(data));
-
-    full_name = normalize(full_name);
-
-    if (full_name && !NAME_REGEX.test(full_name)) {
-      return next(new AppError("Invalid full_name value", 400));
+    const update = {};
+    if (full_name) update.full_name = full_name;
+    if (normalize(gender)) update.gender = normalize(gender);
+    if (normalize(years_of_experience) !== null) update.years_of_experience = normalize(years_of_experience);
+    if (normalize(bio) !== null) update.bio = normalize(bio);
+    if (normalize(consultation_price) !== null) update.consultation_price = normalize(consultation_price);
+    if (normalize(phone) !== null) update.phone = normalize(phone);
+    if (normalize(work_from) !== null) update.work_from = normalize(work_from);
+    if (normalize(work_to) !== null) update.work_to = normalize(work_to);
+    if (normalize(specialist) !== null) update.specialist = normalize(specialist);
+    if (normalize(work_days) !== null) update.work_days = normalize(work_days);
+    if (normalize(location) !== null) update.location = normalize(location);
+    if (normalize(licence) !== null) update.licence = normalize(licence);
+    if (doctorGeoLocation !== undefined) {
+      update.geo_location = doctorGeoLocation
+        ? { type: "Point", coordinates: [doctorGeoLocation.longitude, doctorGeoLocation.latitude] }
+        : null;
     }
 
-    if (work_from && !TIME_REGEX.test(work_from))
-      return next(new AppError("Invalid work_from format", 400));
+    const updated = await Doctor.findOneAndUpdate({ user_id }, update, { new: true }).lean();
+    if (!updated) return next(new AppError("Profile not found", 404));
 
-    if (work_to && !TIME_REGEX.test(work_to))
-      return next(new AppError("Invalid work_to format", 400));
+    const ratings = await getRatings({ doctor_id: updated._id });
 
-    if (Array.isArray(work_days))
-      work_days = work_days.join(",");
+    return res.status(200).json({
+      status: "success",
+      message: "تم تحديث الملف الشخصي بنجاح",
+      photo,
+      profile: {
+        full_name: updated.full_name,
+        gender: updated.gender,
+        years_of_experience: updated.years_of_experience,
+        bio: updated.bio,
+        consultation_price: updated.consultation_price,
+        phone: updated.phone,
+        work_from: updated.work_from,
+        work_to: updated.work_to,
+        specialist: updated.specialist,
+        work_days: updated.work_days,
+        location: updated.location,
+        geo_location: formatGeo(updated.geo_location),
+        is_verified: updated.is_verified,
+        licence: updated.licence,
+        ...ratings,
+      },
+    });
+  }
 
-    updateProfile = async () => {
-      const result = await sql.query`
-        UPDATE dbo.Staff
-        SET
-          full_name           = COALESCE(CAST(${full_name} AS NVARCHAR(150)), full_name),
-          gender              = COALESCE(${normalize(gender)}, gender),
-          years_of_experience = COALESCE(${normalize(years_of_experience)}, years_of_experience),
-          bio                 = COALESCE(${normalize(bio)}, bio),
-          phone               = COALESCE(${normalize(phone)}, phone),
-          specialist          = COALESCE(${normalize(specialist)}, specialist),
-          work_days           = COALESCE(${normalize(work_days)}, work_days),
-          work_from           = COALESCE(${normalize(work_from)}, work_from),
-          work_to             = COALESCE(${normalize(work_to)}, work_to),
-          consultation_price  = COALESCE(${normalize(consultation_price)}, consultation_price),
-          location            = COALESCE(${normalize(location)}, location),
-          licence             = COALESCE(${normalize(licence)}, licence)
-        WHERE user_id = ${user_id};
-      `;
+  if (user_type === "staff") {
+    const staff = await Staff.findOne({ user_id }).lean();
+    if (!staff) return next(new AppError("Profile not found", 404));
 
-      if (staffGeoLocation !== undefined && result.rowsAffected[0] > 0) {
-        if (staffGeoLocation) {
-          await sql.query`
-            UPDATE dbo.Staff
-            SET geo_location =
-              geography::Point(
-                ${staffGeoLocation.latitude},
-                ${staffGeoLocation.longitude},
-                4326
-              )
-            WHERE user_id = ${user_id};
-          `;
-        } else {
-          await sql.query`
-            UPDATE dbo.Staff
-            SET geo_location = NULL
-            WHERE user_id = ${user_id};
-          `;
-        }
-      }
+    let { full_name, gender, years_of_experience, bio, specialist, work_days, work_from, work_to, consultation_price, phone, location, licence } = data;
+    const staffGeoLocation = normalizeGeoLocation(getGeoLocationFromBody(data));
 
-      return result;
-    };
+    full_name = normalize(full_name);
+    if (full_name && !NAME_REGEX.test(full_name)) return next(new AppError("Invalid full_name value", 400));
+    if (work_from && !TIME_REGEX.test(work_from)) return next(new AppError("Invalid work_from format", 400));
+    if (work_to && !TIME_REGEX.test(work_to)) return next(new AppError("Invalid work_to format", 400));
+    if (Array.isArray(work_days)) work_days = work_days.join(",");
 
-    selectProfile = () => sql.query`
-      SELECT
-        full_name,
-        gender,
-        years_of_experience,
-        bio,
-        phone,
-        specialist,
-        work_days,
-        consultation_price,
-        location,
-        CONVERT(VARCHAR(5), work_from, 108) AS work_from,
-        CONVERT(VARCHAR(5), work_to, 108)   AS work_to,
-        geo_location.Lat  AS geo_location_latitude,
-        geo_location.Long AS geo_location_longitude,
-        clinic_id,
-        is_verified,
-        licence
-      FROM dbo.Staff
-      WHERE user_id = ${user_id};
-    `;
-  } else if (user_type === "clinic") {
+    const update = {};
+    if (full_name) update.full_name = full_name;
+    if (normalize(gender) !== null) update.gender = normalize(gender);
+    if (normalize(years_of_experience) !== null) update.years_of_experience = normalize(years_of_experience);
+    if (normalize(bio) !== null) update.bio = normalize(bio);
+    if (normalize(phone) !== null) update.phone = normalize(phone);
+    if (normalize(specialist) !== null) update.specialist = normalize(specialist);
+    if (normalize(work_days) !== null) update.work_days = normalize(work_days);
+    if (normalize(work_from) !== null) update.work_from = normalize(work_from);
+    if (normalize(work_to) !== null) update.work_to = normalize(work_to);
+    if (normalize(consultation_price) !== null) update.consultation_price = normalize(consultation_price);
+    if (normalize(location) !== null) update.location = normalize(location);
+    if (normalize(licence) !== null) update.licence = normalize(licence);
+    if (staffGeoLocation !== undefined) {
+      update.geo_location = staffGeoLocation
+        ? { type: "Point", coordinates: [staffGeoLocation.longitude, staffGeoLocation.latitude] }
+        : null;
+    }
+
+    const updated = await Staff.findOneAndUpdate({ user_id }, update, { new: true }).lean();
+    if (!updated) return next(new AppError("Profile not found", 404));
+
+    return res.status(200).json({
+      status: "success",
+      message: "تم تحديث الملف الشخصي بنجاح",
+      photo,
+      profile: {
+        full_name: updated.full_name,
+        gender: updated.gender,
+        years_of_experience: updated.years_of_experience,
+        bio: updated.bio,
+        phone: updated.phone,
+        specialist: updated.specialist,
+        work_days: updated.work_days,
+        consultation_price: updated.consultation_price,
+        location: updated.location,
+        work_from: updated.work_from,
+        work_to: updated.work_to,
+        geo_location: formatGeo(updated.geo_location),
+        clinic_id: updated.clinic_id,
+        is_verified: updated.is_verified,
+        licence: updated.licence,
+      },
+    });
+  }
+
+  if (user_type === "clinic") {
     let { name, address, location, phone, email, licence } = data;
     const clinicGeoLocation = normalizeGeoLocation(getGeoLocationFromBody(data));
 
     name = normalize(name);
-    if (name && (typeof name !== "string" || name.length > 150)) {
-      return next(new AppError("Invalid clinic name value", 400));
-    }
+    if (name && (typeof name !== "string" || name.length > 150)) return next(new AppError("Invalid clinic name value", 400));
 
     email = normalize(email);
-    if (email && !EMAIL_REGEX.test(email)) {
-      return next(new AppError("Invalid email format", 400));
-    }
+    if (email && !EMAIL_REGEX.test(email)) return next(new AppError("Invalid email format", 400));
 
     if (email) {
-      const duplicate = await sql.query`
-        SELECT 1 AS duplicate_found
-        FROM dbo.Users
-        WHERE email = ${email}
-          AND user_id <> ${user_id}
-        UNION
-        SELECT 1 AS duplicate_found
-        FROM dbo.Clinics
-        WHERE email = ${email}
-          AND owner_user_id <> ${user_id};
-      `;
-
-      if (duplicate.recordset.length) {
-        return next(new AppError("Email is already in use", 409));
-      }
+      const duplicate = await User.findOne({ email, _id: { $ne: user_id } }).lean()
+        || await Clinic.findOne({ email, owner_user_id: { $ne: user_id } }).lean();
+      if (duplicate) return next(new AppError("Email is already in use", 409));
     }
 
-    updateProfile = async () => {
-      if (email) {
-        await sql.query`
-          UPDATE dbo.Users
-          SET email = ${email}
-          WHERE user_id = ${user_id};
-        `;
-      }
+    if (email) await User.findByIdAndUpdate(user_id, { email });
 
-      const result = await sql.query`
-        UPDATE dbo.Clinics
-        SET
-          name    = COALESCE(CAST(${name} AS NVARCHAR(150)), name),
-          address = COALESCE(CAST(${normalize(address)} AS NVARCHAR(255)), address),
-          location = COALESCE(CAST(${normalize(location)} AS NVARCHAR(150)), location),
-          phone   = COALESCE(${normalize(phone)}, phone),
-          email   = COALESCE(${email}, email),
-          licence = COALESCE(${normalize(licence)}, licence),
-          status  = 'pending',
-          verified_at = NULL,
-          verified_by_admin_id = NULL
-        WHERE owner_user_id = ${user_id};
-      `;
-
-      if (clinicGeoLocation !== undefined && result.rowsAffected[0] > 0) {
-        if (clinicGeoLocation) {
-          await sql.query`
-            UPDATE dbo.Clinics
-            SET geo_location = geography::Point(${clinicGeoLocation.latitude}, ${clinicGeoLocation.longitude}, 4326)
-            WHERE owner_user_id = ${user_id};
-          `;
-        } else {
-          await sql.query`
-            UPDATE dbo.Clinics
-            SET geo_location = NULL
-            WHERE owner_user_id = ${user_id};
-          `;
-        }
-      }
-
-      return result;
+    const clinicUpdate = {
+      status: "pending",
+      verified_at: null,
+      verified_by_admin_id: null,
     };
+    if (name) clinicUpdate.name = name;
+    if (normalize(address)) clinicUpdate.address = normalize(address);
+    if (normalize(location)) clinicUpdate.location = normalize(location);
+    if (normalize(phone)) clinicUpdate.phone = normalize(phone);
+    if (email) clinicUpdate.email = email;
+    if (normalize(licence)) clinicUpdate.licence = normalize(licence);
+    if (clinicGeoLocation !== undefined) {
+      clinicUpdate.geo_location = clinicGeoLocation
+        ? { type: "Point", coordinates: [clinicGeoLocation.longitude, clinicGeoLocation.latitude] }
+        : null;
+    }
 
-    selectProfile = () => sql.query`
-      SELECT
-        clinic_id,
-        name,
-        address,
-        location,
-        phone,
-        email,
-        status,
-        licence,
-        geo_location.Lat AS geo_location_latitude,
-        geo_location.Long AS geo_location_longitude
-      FROM dbo.Clinics
-      WHERE owner_user_id = ${user_id};
-    `;
-  } else if (user_type === "admin") {
+    const updated = await Clinic.findOneAndUpdate({ owner_user_id: user_id }, clinicUpdate, { new: true }).lean();
+    if (!updated) return next(new AppError("Profile not found", 404));
+
+    return res.status(200).json({
+      status: "success",
+      message: "تم تحديث الملف الشخصي بنجاح",
+      photo,
+      profile: {
+        clinic_id: updated._id,
+        name: updated.name,
+        address: updated.address,
+        location: updated.location,
+        phone: updated.phone,
+        email: updated.email,
+        status: updated.status,
+        licence: updated.licence,
+        geo_location: formatGeo(updated.geo_location),
+      },
+    });
+  }
+
+  if (user_type === "admin") {
     let { full_name } = data;
     full_name = normalize(full_name);
+    if (full_name && !NAME_REGEX.test(full_name)) return next(new AppError("Invalid full_name value", 400));
+    if (!full_name && !data.photo) return next(new AppError("Admin can update only full_name or photo", 400));
 
-    if (full_name && !NAME_REGEX.test(full_name)) {
-      return next(new AppError("Invalid full_name value", 400));
+    let profile = null;
+    if (full_name) {
+      const updated = await Admin.findOneAndUpdate({ user_id }, { full_name }, { new: true }).lean();
+      if (!updated) return next(new AppError("Profile not found", 404));
+      profile = { full_name: updated.full_name };
+    } else {
+      const admin = await Admin.findOne({ user_id }).lean();
+      profile = admin ? { full_name: admin.full_name } : null;
     }
 
-    if (!full_name && !data.photo) {
-      return next(
-        new AppError("Admin can update only full_name or photo", 400),
-      );
-    }
-
-    updateProfile = full_name
-      ? () => sql.query`
-          UPDATE dbo.Admins
-          SET full_name = CAST(${full_name} AS NVARCHAR(150))
-          WHERE user_id = ${user_id};
-        `
-      : async () => ({ rowsAffected: [1] });
-
-    selectProfile = () => sql.query`
-      SELECT full_name
-      FROM dbo.Admins
-      WHERE user_id = ${user_id};
-    `;
-  } else {
-    return next(new AppError("Profile update is not allowed", 403));
+    return res.status(200).json({
+      status: "success",
+      message: "تم تحديث الملف الشخصي بنجاح",
+      photo,
+      profile,
+    });
   }
 
-  const result = await updateProfile();
-  if (result.rowsAffected[0] === 0) {
-    return next(new AppError("Profile not found", 404));
-  }
-
-  const profile = selectProfile ? (await selectProfile()).recordset[0] : null;
-  if (user_type === "doctor" || user_type === "clinic" || user_type === "staff") {
-    attachGeoLocation(profile);
-  }
-
-  res.status(200).json({
-    status: "success",
-    message: "تم تحديث الملف الشخصي بنجاح",
-    photo,
-    profile,
-  });
+  return next(new AppError("Profile update is not allowed", 403));
 });
 
 exports.userStats = catchAsync(async (req, res) => {
-
-  const doctorsQuery = sql.query(`
-      SELECT COUNT(*) AS count
-      FROM Doctors
-      WHERE is_verified = 1
-  `);
-
-  const staffQuery = sql.query(`
-      SELECT COUNT(*) AS count
-      FROM Staff
-      WHERE is_verified = 1
-  `);
-
-  const clinicsQuery = sql.query(`
-      SELECT COUNT(*) AS count
-      FROM Clinics
-      WHERE status = 'approved'
-  `);
-
-  const patientsQuery = sql.query(`
-      SELECT COUNT(*) AS count
-      FROM Patients
-  `);
-
-  const [
-    doctors,
-    staff,
-    clinics,
-    patients
-  ] = await Promise.all([
-    doctorsQuery,
-    staffQuery,
-    clinicsQuery,
-    patientsQuery
+  const [totalDoctors, totalStaff, totalClinics, totalPatients] = await Promise.all([
+    Doctor.countDocuments({ is_verified: true }),
+    Staff.countDocuments({ is_verified: true }),
+    Clinic.countDocuments({ status: "approved" }),
+    Patient.countDocuments(),
   ]);
-
-  const totalDoctors =
-    doctors.recordset[0].count;
-
-  const totalStaff =
-    staff.recordset[0].count;
-
-  const totalClinics =
-    clinics.recordset[0].count;
-
-  const totalPatients =
-    patients.recordset[0].count;
 
   res.status(200).json({
     status: "success",
@@ -621,8 +405,7 @@ exports.userStats = catchAsync(async (req, res) => {
       totalStaff,
       totalClinics,
       totalPatients,
-      totalMedicalUsers: totalDoctors + totalStaff
-    }
+      totalMedicalUsers: totalDoctors + totalStaff,
+    },
   });
-
 });

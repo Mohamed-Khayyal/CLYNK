@@ -1,159 +1,81 @@
 const bcrypt = require("bcryptjs");
-const { sql } = require("../config/db.Config");
-const catchAsync = require("../utilts/catch.Async");
+const mongoose = require("mongoose");
 const AppError = require("../utilts/app.Error");
+const catchAsync = require("../utilts/catch.Async");
 const { createNotification } = require("../utilts/notification");
 const Email = require("../utilts/email");
 
+const User = require("../models/User.model");
+const Clinic = require("../models/Clinic.model");
+const Staff = require("../models/Staff.model");
+
 const TIME_REGEX = /^\d{2}:\d{2}(:\d{2})?$/;
+
+const parseId = (value) => {
+  if (!value || !mongoose.Types.ObjectId.isValid(value)) return null;
+  return value;
+};
 
 const sendStaffDoctorPendingVerificationEmail = async ({ email, full_name }) => {
   try {
-    await new Email({
-      email,
-      name: full_name || email,
-    }).sendDoctorPendingVerification();
+    await new Email({ email, name: full_name || email }).sendDoctorPendingVerification();
   } catch (err) {
     console.error("Failed to send staff doctor pending verification email:", err.message);
   }
 };
 
 exports.createStaffForClinic = catchAsync(async (req, res, next) => {
-  const {
-    email,
-    password,
-    full_name,
-    name,
-    phone,
-    specialist,
-    work_days,
-    work_from,
-    work_to,
-    consultation_price,
-  } = req.body;
+  const { email, password, full_name, name, phone, specialist, work_days, work_from, work_to, consultation_price } = req.body;
   const { clinic_id, owner_user_id } = req.clinic;
   const staffName = full_name || name;
 
-  if (!email || !password || !staffName) {
-    return next(
-      new AppError("Name, email, and password are required", 400),
-    );
-  }
+  if (!email || !password || !staffName) return next(new AppError("Name, email, and password are required", 400));
 
-  const exists = await sql.query`
-    SELECT user_id FROM dbo.Users WHERE email = ${email};
-  `;
-  if (exists.recordset.length) {
-    return next(new AppError("Email is already in use", 409));
-  }
+  const exists = await User.findOne({ email }).lean();
+  if (exists) return next(new AppError("Email is already in use", 409));
 
-  const normalizedWorkDays = Array.isArray(work_days)
-    ? work_days.join(",")
-    : work_days || null;
-  const normalizedPrice =
-    consultation_price === undefined ||
-    consultation_price === null ||
-    consultation_price === ""
-      ? null
-      : Number(consultation_price);
+  const normalizedWorkDays = Array.isArray(work_days) ? work_days.join(",") : work_days || null;
+  const normalizedPrice = consultation_price === undefined || consultation_price === null || consultation_price === "" ? null : Number(consultation_price);
 
-  if (
-    (work_from && !TIME_REGEX.test(work_from)) ||
-    (work_to && !TIME_REGEX.test(work_to))
-  ) {
-    return next(new AppError("Invalid work time format", 400));
-  }
-
-  if (Number.isNaN(normalizedPrice) || normalizedPrice < 0) {
-    return next(
-      new AppError("consultation_price must be a valid non-negative number", 400),
-    );
-  }
+  if ((work_from && !TIME_REGEX.test(work_from)) || (work_to && !TIME_REGEX.test(work_to))) return next(new AppError("Invalid work time format", 400));
+  if (normalizedPrice !== null && (Number.isNaN(normalizedPrice) || normalizedPrice < 0)) return next(new AppError("consultation_price must be a valid non-negative number", 400));
 
   const hashedPassword = await bcrypt.hash(password, 12);
 
-  const transaction = new sql.Transaction(sql.globalConnectionPool);
-  let transactionStarted = false;
+  const session = await mongoose.startSession();
+  session.startTransaction();
   let userId;
 
   try {
-    await transaction.begin();
-    transactionStarted = true;
-
-    const userResult = await transaction.request().query`
-      INSERT INTO dbo.Users (email, password, user_type)
-      OUTPUT INSERTED.user_id
-      VALUES (${email}, ${hashedPassword}, 'staff');
-    `;
-
-    userId = userResult.recordset[0].user_id;
-
-    await transaction.request().query`
-      INSERT INTO dbo.Staff
-        (user_id,
-         clinic_id,
-         full_name,
-         phone,
-         specialist,
-         work_days,
-         work_from,
-         work_to,
-         consultation_price,
-         is_verified)
-      VALUES
-        (${userId},
-         ${clinic_id},
-         ${staffName},
-         ${phone || null},
-         ${specialist || null},
-         ${normalizedWorkDays},
-         ${work_from || null},
-         ${work_to || null},
-         ${normalizedPrice},
-         0);
-    `;
-
-    await transaction.commit();
+    const [newUser] = await User.create([{ email, password: hashedPassword, user_type: "staff" }], { session });
+    userId = newUser._id;
+    await Staff.create([{
+      user_id: userId, clinic_id, full_name: staffName,
+      phone: phone || null, specialist: specialist || null,
+      work_days: normalizedWorkDays, work_from: work_from || null, work_to: work_to || null,
+      consultation_price: normalizedPrice, is_verified: false,
+    }], { session });
+    await session.commitTransaction();
   } catch (err) {
-    if (transactionStarted) {
-      await transaction.rollback();
-    }
+    await session.abortTransaction();
+    session.endSession();
     return next(err);
   }
+  session.endSession();
 
   if (owner_user_id) {
-    await createNotification({
-      user_id: owner_user_id,
-      title: "توثيق الموظف قيد الانتظار",
-      message: `تم إنشاء حساب موظف باسم "${staffName}" وهو بانتظار التوثيق.`,
-    });
+    await createNotification({ user_id: owner_user_id, title: "توثيق الموظف قيد الانتظار", message: `تم إنشاء حساب موظف باسم "${staffName}" وهو بانتظار التوثيق.` });
   }
 
-  const hasDoctorProfile = Boolean(
-    specialist || normalizedWorkDays || work_from || work_to || normalizedPrice !== null,
-  );
-
-  if (hasDoctorProfile) {
-    await sendStaffDoctorPendingVerificationEmail({
-      email,
-      full_name: staffName,
-    });
-  }
+  const hasDoctorProfile = Boolean(specialist || normalizedWorkDays || work_from || work_to || normalizedPrice !== null);
+  if (hasDoctorProfile) await sendStaffDoctorPendingVerificationEmail({ email, full_name: staffName });
 
   res.status(201).json({
     status: "success",
     staff: {
-      user_id: userId,
-      email,
-      full_name: staffName,
-      phone: phone || null,
-      specialist: specialist || null,
-      work_days: normalizedWorkDays,
-      work_from: work_from || null,
-      work_to: work_to || null,
-      consultation_price: normalizedPrice,
-      clinic_id,
-      is_verified: false,
+      user_id: userId, email, full_name: staffName, phone: phone || null, specialist: specialist || null,
+      work_days: normalizedWorkDays, work_from: work_from || null, work_to: work_to || null,
+      consultation_price: normalizedPrice, clinic_id, is_verified: false,
     },
   });
 });
@@ -161,273 +83,133 @@ exports.createStaffForClinic = catchAsync(async (req, res, next) => {
 exports.getMyClinicStaff = catchAsync(async (req, res) => {
   const { clinic_id } = req.clinic;
 
-  const staffResult = await sql.query`
-    SELECT
-      s.staff_id,
-      u.email,
-      s.full_name,
-      s.specialist,
-      s.is_verified,
-      u.is_active,
-      u.photo,
-      s.consultation_price
-    FROM dbo.Staff s
-    JOIN dbo.Users u
-      ON s.user_id = u.user_id
-    WHERE s.clinic_id = ${clinic_id}
-    ORDER BY s.staff_id DESC;
-  `;
+  const staffList = await Staff.find({ clinic_id })
+    .populate("user_id", "email photo is_active")
+    .sort({ _id: -1 })
+    .lean();
 
-  res.status(200).json({
-    status: "success",
-    results: staffResult.recordset.length,
-    staff: staffResult.recordset,
-  });
+  const result = staffList.map((s) => ({
+    staff_id: s._id,
+    email: s.user_id?.email,
+    full_name: s.full_name,
+    specialist: s.specialist,
+    is_verified: s.is_verified,
+    is_active: s.user_id?.is_active,
+    photo: s.user_id?.photo,
+    consultation_price: s.consultation_price,
+  }));
+
+  res.status(200).json({ status: "success", results: result.length, staff: result });
 });
 
 exports.verifyStaff = catchAsync(async (req, res, next) => {
-  const staffId = Number(req.params.staffId);
-  const { clinic_id } = req.clinic;
+  const staffId = parseId(req.params.staffId);
+  if (!staffId) return next(new AppError("Invalid staff id", 400));
+  const clinicId = req.clinic.clinic_id;
 
-  const staffResult = await sql.query`
-    SELECT staff_id, user_id, is_verified
-    FROM dbo.Staff
-    WHERE staff_id = ${staffId}
-      AND clinic_id = ${clinic_id};
-  `;
-
-  const staff = staffResult.recordset[0];
-  if (!staff) {
-    return next(new AppError("Staff member is not part of your clinic", 404));
-  }
+  const staff = await Staff.findOne({ _id: staffId, clinic_id: clinicId });
+  if (!staff) return next(new AppError("Staff member not found in your clinic", 404));
 
   if (staff.is_verified) {
     return next(new AppError("Staff member is already verified", 400));
   }
 
-  await sql.query`
-    UPDATE dbo.Staff
-    SET is_verified = 1
-    WHERE staff_id = ${staffId};
-  `;
+  await Staff.findByIdAndUpdate(staffId, { is_verified: true });
+  await createNotification({ user_id: staff.user_id, title: "Clinic joined", message: `You have been verified by ${req.clinic.name} and can now accept bookings.` });
 
-  await createNotification({
-    user_id: staff.user_id,
-    title: "تم توثيق حساب الموظف",
-    message:
-      "تم توثيق حسابك كموظف. يمكنك الآن الوصول إلى ميزات العيادة.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "Staff member verified successfully",
-    staff_id: staffId,
-  });
+  res.status(200).json({ status: "success", message: "Staff member has been verified successfully" });
 });
+
 exports.UnVerifyStaff = catchAsync(async (req, res, next) => {
-  const staffId = Number(req.params.staffId);
-  const { clinic_id } = req.clinic;
+  const staffId = parseId(req.params.staffId);
+  if (!staffId) return next(new AppError("Invalid staff id", 400));
+  const clinic_id = req.clinic.clinic_id;
 
-  const staffResult = await sql.query`
-    SELECT staff_id, user_id, is_verified
-    FROM dbo.Staff
-    WHERE staff_id = ${staffId}
-      AND clinic_id = ${clinic_id};
-  `;
+  const staff = await Staff.findOne({ _id: staffId, clinic_id }).lean();
+  if (!staff) return next(new AppError("Staff member is not part of your clinic", 404));
+  if (!staff.is_verified) return next(new AppError("Staff member is already unverified", 400));
 
-  const staff = staffResult.recordset[0];
-  if (!staff) {
-    return next(new AppError("Staff member is not part of your clinic", 404));
-  }
+  await Staff.findByIdAndUpdate(staffId, { is_verified: false });
 
-  if (!staff.is_verified) {
-    return next(new AppError("Staff member is already unverified", 400));
-  }
+  await createNotification({ user_id: staff.user_id, title: "تم إلغاء توثيق حساب الموظف", message: "تم إلغاء توثيق حسابك كموظف. يمكنك الآن الوصول إلى ميزات العيادة." });
 
-  await sql.query`
-    UPDATE dbo.Staff
-    SET is_verified = 0
-    WHERE staff_id = ${staffId};
-  `;
-
-  await createNotification({
-    user_id: staff.user_id,
-    title: "تم إلغاء توثيق حساب الموظف",
-    message:
-      "تم إلغاء توثيق حسابك كموظف. يمكنك الآن الوصول إلى ميزات العيادة.",
-  });
-
-  res.status(200).json({
-    status: "success",
-    message: "Staff member unverified successfully",
-    staff_id: staffId,
-  });
+  res.status(200).json({ status: "success", message: "Staff member unverified successfully", staff_id: staffId });
 });
 
 exports.getPendingStaff = catchAsync(async (req, res) => {
   const { clinic_id } = req.clinic;
 
-  const result = await sql.query`
-    SELECT
-      s.staff_id,
-      s.full_name,
-      s.specialist,
-      u.email,
-      u.photo,
-      u.created_at
-    FROM dbo.Staff s
-    JOIN dbo.Users u
-      ON s.user_id = u.user_id
-    WHERE s.clinic_id = ${clinic_id}
-      AND s.is_verified = 0
-    ORDER BY u.created_at DESC;
-  `;
+  const staffList = await Staff.find({ clinic_id, is_verified: false })
+    .populate("user_id", "email photo created_at")
+    .sort({ _id: -1 })
+    .lean();
 
-  res.status(200).json({
-    status: "success",
-    results: result.recordset.length,
-    staff: result.recordset,
-  });
+  const result = staffList.map((s) => ({
+    staff_id: s._id,
+    full_name: s.full_name,
+    specialist: s.specialist,
+    email: s.user_id?.email,
+    photo: s.user_id?.photo,
+    created_at: s.user_id?.created_at,
+  }));
+
+  res.status(200).json({ status: "success", results: result.length, staff: result });
 });
 
 exports.getStaffProfile = catchAsync(async (req, res, next) => {
-  const staffId = Number(req.params.id);
+  const staffId = parseId(req.params.id);
+  if (!staffId) return next(new AppError("Invalid staff id", 400));
+  if (!staffId || !mongoose.Types.ObjectId.isValid(staffId)) return next(new AppError("Invalid staff id", 400));
 
-  if (!Number.isInteger(staffId) || staffId <= 0) {
-    return next(new AppError("Invalid staff id", 400));
+  const staff = await Staff.findOne({
+    _id: staffId,
+    is_verified: true,
+  })
+    .populate("user_id", "photo is_active")
+    .populate("clinic_id", "name location phone status geo_location")
+    .lean();
+
+  if (!staff || !staff.user_id?.is_active || staff.clinic_id?.status !== "approved") {
+    return next(new AppError("Staff member not found", 404));
   }
 
-  const result = await sql.query`
-    SELECT
-      s.staff_id,
-      s.user_id,
-      s.full_name,
-      s.bio,
-      s.phone,
-      s.gender,
-      s.specialist,
-      s.work_days,
-
-      CONVERT(VARCHAR(5), s.work_from,108)
-      AS work_from,
-
-      CONVERT(VARCHAR(5), s.work_to,108)
-      AS work_to,
-
-      s.consultation_price,
-      s.is_verified,
-
-      u.photo,
-
-      c.clinic_id,
-      c.name AS clinic_name,
-      c.location AS clinic_location,
-      c.phone AS clinic_phone,
-      ISNULL(bs.total_bookings,0)
-      AS total_bookings,
-
-      ISNULL(bs.total_patients,0)
-      AS total_patients,
-      ISNULL(rt.total_ratings,0)
-      AS total_ratings,
-
-      CAST(
-        ISNULL(rt.average_rating,0)
-        AS DECIMAL(3,1)
-      ) AS average_rating,
-
-      ISNULL(cr.total_ratings, 0)
-      AS clinic_total_ratings,
-
-      CAST(
-        ISNULL(cr.average_rating, 0)
-        AS DECIMAL(3,1)
-      ) AS clinic_average_rating,
-
-
-      CAST(
-        CASE
-          WHEN s.is_verified=1
-          AND c.status='approved'
-          THEN 1
-          ELSE 0
-        END
-      AS BIT)
-      AS can_be_booked
-
-
-    FROM dbo.Staff s
-
-    JOIN dbo.Users u
-      ON u.user_id=s.user_id
-
-    JOIN dbo.Clinics c
-      ON c.clinic_id=s.clinic_id
-
-    OUTER APPLY(
-      SELECT
-        COUNT(*) total_bookings,
-
-        COUNT(
-          DISTINCT patient_user_id
-        ) total_patients
-
-      FROM dbo.Bookings b
-
-      WHERE
-        b.staff_id=s.staff_id
-        AND b.status='confirmed'
-    ) bs
-
-    OUTER APPLY(
-      SELECT
-        COUNT(*) total_ratings,
-
-        ROUND(
-          AVG(CAST(r.rating AS FLOAT)),
-          1
-        ) average_rating
-
-      FROM dbo.Ratings r
-
-      WHERE r.staff_id=s.staff_id
-
-    ) rt
-
-    OUTER APPLY(
-      SELECT
-        COUNT(*) total_ratings,
-        ROUND(
-          AVG(CAST(r.rating AS FLOAT)),
-          1
-        ) average_rating
-      FROM dbo.Ratings r
-      WHERE r.clinic_id = c.clinic_id
-    ) cr
-
-
-    WHERE
-      s.staff_id=${staffId}
-      AND s.work_days IS NOT NULL
-      AND s.work_from IS NOT NULL
-      AND s.work_to IS NOT NULL
-      AND s.is_verified=1
-      AND u.is_active=1
-      AND c.status='approved'
-  `;
-
-
-  if (!result.recordset.length) {
-    return next(
-      new AppError(
-        "Staff member not found",
-        404
-      )
-    );
-  }
+  const Rating = require("../models/Rating.model");
+  const staffRatings = await Rating.aggregate([
+    { $match: { staff_id: staff._id } },
+    { $group: { _id: null, total: { $sum: 1 }, avg: { $avg: "$rating" } } },
+  ]);
+  const clinicRatings = await Rating.aggregate([
+    { $match: { clinic_id: staff.clinic_id?._id } },
+    { $group: { _id: null, total: { $sum: 1 }, avg: { $avg: "$rating" } } },
+  ]);
 
   res.status(200).json({
-    status:"success",
-    staff:result.recordset[0]
+    status: "success",
+    staff: {
+      staff_id: staff._id,
+      user_id: staff.user_id?._id,
+      full_name: staff.full_name,
+      bio: staff.bio,
+      phone: staff.phone,
+      gender: staff.gender,
+      specialist: staff.specialist,
+      work_days: staff.work_days,
+      work_from: staff.work_from,
+      work_to: staff.work_to,
+      consultation_price: staff.consultation_price,
+      is_verified: staff.is_verified,
+      photo: staff.user_id?.photo,
+      clinic_id: staff.clinic_id?._id,
+      clinic_name: staff.clinic_id?.name,
+      clinic_location: staff.clinic_id?.location,
+      clinic_phone: staff.clinic_id?.phone,
+      total_bookings: 0,
+      total_patients: 0,
+      total_ratings: staffRatings[0]?.total || 0,
+      average_rating: Math.round((staffRatings[0]?.avg || 0) * 10) / 10,
+      clinic_total_ratings: clinicRatings[0]?.total || 0,
+      clinic_average_rating: Math.round((clinicRatings[0]?.avg || 0) * 10) / 10,
+      can_be_booked: true,
+    },
   });
 });

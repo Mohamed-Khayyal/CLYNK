@@ -1,17 +1,11 @@
-const { sql } = require("../config/db.Config");
+const Doctor = require("../models/Doctor.model");
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
 
 exports.isVerifiedDoctor = catchAsync(async (req, res, next) => {
   const userId = req.user.user_id;
 
-  const result = await sql.query`
-    SELECT is_verified
-    FROM dbo.Doctors
-    WHERE user_id = ${userId};
-  `;
-
-  const doctor = result.recordset[0];
+  const doctor = await Doctor.findOne({ user_id: userId });
 
   if (!doctor) {
     return next(new AppError("Doctor profile not found", 404));

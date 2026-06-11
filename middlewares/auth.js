@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { sql } = require("../config/db.Config");
+const User = require("../models/User.model");
 const catchAsync = require("../utilts/catch.Async");
 const AppError = require("../utilts/app.Error");
 
@@ -33,13 +33,9 @@ exports.protect = catchAsync(async (req, res, next) => {
     );
   }
 
-  const result = await sql.query`
-    SELECT user_id, email, user_type, is_active, created_at, photo
-    FROM dbo.Users
-    WHERE user_id = ${decoded.user_id};
-  `;
-
-  const user = result.recordset[0];
+  const user = await User.findById(decoded.user_id).select(
+    "email user_type is_active created_at photo",
+  );
 
   if (!user || !user.is_active) {
     return next(
@@ -50,7 +46,13 @@ exports.protect = catchAsync(async (req, res, next) => {
     );
   }
 
-  req.user = user;
+  req.user = {
+    user_id: user._id,
+    email: user.email,
+    user_type: user.user_type,
+    is_active: user.is_active,
+    photo: user.photo,
+  };
   next();
 });
 
