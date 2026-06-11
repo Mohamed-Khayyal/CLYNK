@@ -33,6 +33,7 @@ router.get("/verified-staff", adminController.getVerifiedStaff);
 router.get("/unverified-staff", adminController.getUnverifiedStaff);
 router.get("/bookings", adminController.getAllBookings);
 router.get("/audit-logs", auditController.listAuditLogs);
+router.delete("/audit-logs", auditController.clearAuditLogs);
 
 router.get("/patients", adminController.getAllPatients);
 

@@ -185,8 +185,15 @@ const getAuditLogs = ({
   return filtered.slice(-limit).reverse();
 };
 
+const clearAuditLogs = () => {
+  if (fs.existsSync(auditLogPath)) fs.writeFileSync(auditLogPath, "");
+  if (fs.existsSync(auditInfoLogPath)) fs.writeFileSync(auditInfoLogPath, "");
+  if (fs.existsSync(auditErrorLogPath)) fs.writeFileSync(auditErrorLogPath, "");
+};
+
 module.exports = {
   logAuditEvent,
   getAuditLogs,
   sanitizeAuditBody,
+  clearAuditLogs,
 };
