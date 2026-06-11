@@ -81,9 +81,12 @@ let server;
 const startServer = async () => {
   await connectDB();
 
-  server = app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  // Only listen to port if not running on Vercel (serverless)
+  if (process.env.NODE_ENV !== "production") {
+    server = app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  }
 };
 
 startServer();
@@ -97,3 +100,6 @@ process.on("unhandledRejection", (err) => {
     process.exit(1);
   }
 });
+
+// Export the app for Vercel Serverless Functions
+module.exports = app;
