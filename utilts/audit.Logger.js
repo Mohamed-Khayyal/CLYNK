@@ -2,7 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const { createLogger, format, transports } = require("winston");
 
-const logsDir = path.resolve(process.cwd(), "logs");
+const logsDir = process.env.NODE_ENV === "production" 
+  ? path.join("/tmp", "logs") 
+  : path.resolve(process.cwd(), "logs");
 const auditLogPath = path.join(logsDir, "audit.log");
 const auditInfoLogPath = path.join(logsDir, "audit.info.log");
 const auditErrorLogPath = path.join(logsDir, "audit.error.log");
