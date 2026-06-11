@@ -67,7 +67,7 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
     }
   }
 
-  const logs = getAuditLogs({
+  const logs = await getAuditLogs({
     limit,
     level,
     actor_user_id,
@@ -81,20 +81,36 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: "success",
     results: logs.length,
-    logs,
+    data: { logs },
   });
 });
 
 exports.getAuditStats = catchAsync(async (req, res) => {
-  const totalLogs = getAuditLogs({ limit: 100000 }).length;
-  const totalInfoLogs = getAuditLogs({ level: "info", limit: 100000 }).length;
-  const totalErrorLogs = getAuditLogs({ level: "error", limit: 100000 }).length;
-  const totalSuccessLogs = totalLogs - totalErrorLogs;
-  const totalFailedLogs = totalLogs - totalSuccessLogs;
+  const { getAuditLogs } = require("../utilts/audit.Logger");
+  
+  // Since we fetch logs from DB, we should just query it directly for stats,
+  // but to keep it simple and consistent with the existing code, we will
+  // fetch up to 100000 and count them. 
+  // Alternatively, countDocuments could be added to audit.Logger.js for efficiency,
+  // but we can start with this approach to maintain the same return format.
+  const allLogs = await getAuditLogs({ limit: 100000 });
+  const totalLogs = allLogs.length;
+
+  let totalInfoLogs = 0;
+  let totalErrorLogs = 0;
+  let totalSuccessLogs = 0;
+  let totalFailedLogs = 0;
+
+  allLogs.forEach((log) => {
+    if (log.level === "info") totalInfoLogs++;
+    if (log.level === "error") totalErrorLogs++;
+    if (log.status_code >= 200 && log.status_code < 400) totalSuccessLogs++;
+    if (log.status_code >= 400) totalFailedLogs++;
+  });
 
   res.status(200).json({
     status: "success",
-    stats: {
+    data: {
       total_logs: totalLogs,
       total_info_logs: totalInfoLogs,
       total_error_logs: totalErrorLogs,
@@ -106,7 +122,7 @@ exports.getAuditStats = catchAsync(async (req, res) => {
 
 exports.clearAuditLogs = catchAsync(async (req, res, next) => {
   const { clearAuditLogs } = require("../utilts/audit.Logger");
-  clearAuditLogs();
+  await clearAuditLogs();
   
   res.status(200).json({
     status: "success",

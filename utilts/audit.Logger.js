@@ -1,57 +1,4 @@
-const fs = require("fs");
-const path = require("path");
-const { createLogger, format, transports } = require("winston");
-
-const logsDir = process.env.NODE_ENV === "production" 
-  ? path.join("/tmp", "logs") 
-  : path.resolve(process.cwd(), "logs");
-const auditLogPath = path.join(logsDir, "audit.log");
-const auditInfoLogPath = path.join(logsDir, "audit.info.log");
-const auditErrorLogPath = path.join(logsDir, "audit.error.log");
-
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
-
-const onlyLevel = (level) =>
-  format((info) => {
-    return info.level === level ? info : false;
-  });
-
-const auditLogger = createLogger({
-  levels: {
-    error: 0,
-    info: 1,
-  },
-  level: "info",
-  format: format.combine(
-    format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
-    format.json(),
-  ),
-  transports: [
-    new transports.File({
-      filename: auditInfoLogPath,
-      level: "info",
-      format: format.combine(
-        onlyLevel("info")(),
-        format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
-        format.json(),
-      ),
-    }),
-    new transports.File({
-      filename: auditErrorLogPath,
-      level: "error",
-      format: format.combine(
-        onlyLevel("error")(),
-        format.timestamp({ format: "YYYY-MM-DDTHH:mm:ss.SSSZ" }),
-        format.json(),
-      ),
-    }),
-    new transports.File({
-      filename: auditLogPath,
-    }),
-  ],
-});
+const AuditLog = require("../models/AuditLog.model");
 
 const SENSITIVE_KEYS = new Set([
   "password",
@@ -97,31 +44,22 @@ const sanitizeAuditBody = (value, depth = 0) => {
   return truncateText(value);
 };
 
-const logAuditEvent = (event) => {
-  const level = event?.level === "error" ? "error" : "info";
-  const payload = event && typeof event === "object" ? event : {};
-  auditLogger.log({
-    ...payload,
-    level,
-  });
-};
-
-const parseLogLines = (text) => {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  const events = [];
-
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line));
-    } catch (err) {
-      continue;
-    }
+const logAuditEvent = async (event) => {
+  try {
+    const level = event?.level === "error" ? "error" : "info";
+    const payload = event && typeof event === "object" ? event : {};
+    
+    await AuditLog.create({
+      ...payload,
+      level,
+    });
+  } catch (error) {
+    // Silently fail logging rather than breaking the application
+    console.error("Failed to save audit log to MongoDB:", error);
   }
-
-  return events;
 };
 
-const getAuditLogs = ({
+const getAuditLogs = async ({
   limit = 1000,
   level,
   actor_user_id,
@@ -131,64 +69,38 @@ const getAuditLogs = ({
   path_contains,
   location_contains,
 } = {}) => {
-  if (!fs.existsSync(auditLogPath)) {
-    return [];
+  const query = {};
+
+  if (level) query.level = level;
+  if (actor_user_id !== undefined) query.actor_user_id = actor_user_id;
+  if (actor_role !== undefined) query.actor_role = String(actor_role || "guest");
+  if (method) query.method = { $regex: new RegExp(`^${method}$`, "i") };
+  if (status_code !== undefined) query.status_code = Number(status_code);
+  if (path_contains) query.path = { $regex: new RegExp(path_contains, "i") };
+  
+  if (location_contains) {
+    const regex = new RegExp(location_contains, "i");
+    query.$or = [
+      { "ip_location.city": { $regex: regex } },
+      { "ip_location.region": { $regex: regex } },
+      { "ip_location.country": { $regex: regex } }
+    ];
   }
 
-  const text = fs.readFileSync(auditLogPath, "utf8");
-  const parsed = parseLogLines(text);
+  const logs = await AuditLog.find(query)
+    .sort({ timestamp: -1 })
+    .limit(limit)
+    .lean();
 
-  const filtered = parsed.filter((entry) => {
-    if (level && entry.level !== level) {
-      return false;
-    }
-
-    if (actor_user_id !== undefined && entry.actor_user_id !== actor_user_id) {
-      return false;
-    }
-
-    if (actor_role !== undefined && String(entry.actor_role || "guest") !== actor_role) {
-      return false;
-    }
-
-    if (method && String(entry.method || "").toUpperCase() !== method) {
-      return false;
-    }
-
-    if (status_code !== undefined && Number(entry.status_code) !== status_code) {
-      return false;
-    }
-
-    if (
-      path_contains &&
-      !String(entry.path || "").toLowerCase().includes(path_contains.toLowerCase())
-    ) {
-      return false;
-    }
-
-    if (location_contains) {
-      const loc = entry.ip_location || {};
-      const needle = location_contains.toLowerCase();
-      const haystack = [
-        loc.city || "",
-        loc.region || "",
-        loc.country || "",
-      ].join(" ").toLowerCase();
-      if (!haystack.includes(needle)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-
-  return filtered.slice(-limit).reverse();
+  return logs;
 };
 
-const clearAuditLogs = () => {
-  if (fs.existsSync(auditLogPath)) fs.writeFileSync(auditLogPath, "");
-  if (fs.existsSync(auditInfoLogPath)) fs.writeFileSync(auditInfoLogPath, "");
-  if (fs.existsSync(auditErrorLogPath)) fs.writeFileSync(auditErrorLogPath, "");
+const clearAuditLogs = async () => {
+  try {
+    await AuditLog.deleteMany({});
+  } catch (error) {
+    console.error("Failed to clear audit logs:", error);
+  }
 };
 
 module.exports = {
