@@ -92,21 +92,21 @@ const isPublicIp = (ip) => {
 const getRealIp = (req) => {
   const candidates = [];
 
-  // 1. Trust Express's parsed IPs first (since trust proxy is configured)
+  // 1. Trust specific client IP headers first (cf-connecting-ip, true-client-ip, x-client-ip)
+  addHeaderIps(candidates, req.headers["cf-connecting-ip"]);
+  addHeaderIps(candidates, req.headers["true-client-ip"]);
+  addHeaderIps(candidates, req.headers["x-client-ip"]);
+
+  // 2. Trust standard forwarded headers
+  addHeaderIps(candidates, req.headers["x-forwarded-for"]);
+  addForwardedHeaderIps(candidates, req.headers.forwarded);
+  addHeaderIps(candidates, req.headers["x-real-ip"]);
+
+  // 3. Express's parsed IPs next (from trust proxy config)
   addCandidateIp(candidates, req.ip);
   if (Array.isArray(req.ips)) {
     req.ips.forEach((ip) => addCandidateIp(candidates, ip));
   }
-
-  // 2. Trust standard forwarded-for headers
-  addHeaderIps(candidates, req.headers["x-forwarded-for"]);
-  addForwardedHeaderIps(candidates, req.headers.forwarded);
-
-  // 3. Fallback to other headers (x-real-ip might be overwritten by the proxy to be the BFF server IP)
-  addHeaderIps(candidates, req.headers["cf-connecting-ip"]);
-  addHeaderIps(candidates, req.headers["true-client-ip"]);
-  addHeaderIps(candidates, req.headers["x-real-ip"]);
-  addHeaderIps(candidates, req.headers["x-client-ip"]);
 
   // 4. Socket IP
   addCandidateIp(candidates, req.socket?.remoteAddress);
