@@ -1,6 +1,8 @@
+const bcrypt = require("bcryptjs");
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
 const { normalizeGeoLocation, getGeoLocationFromBody } = require("../utilts/geo.Location");
+
 
 const User = require("../models/User.model");
 const Doctor = require("../models/Doctor.model");
@@ -407,5 +409,41 @@ exports.userStats = catchAsync(async (req, res) => {
       totalPatients,
       totalMedicalUsers: totalDoctors + totalStaff,
     },
+  });
+});
+
+exports.changePassword = catchAsync(async (req, res, next) => {
+  const { user_id } = req.user;
+  const { current_password, new_password, confirm_password } = req.body;
+
+  if (!current_password || !new_password || !confirm_password) {
+    return next(new AppError("يجب توفير كلمة المرور الحالية وكلمة المرور الجديدة", 400));
+  }
+
+  if (new_password.length < 8) {
+    return next(new AppError("يجب أن تتكون كلمة المرور الجديدة من 8 أحرف على الأقل", 400));
+  }
+
+  if (new_password !== confirm_password) {
+    return next(new AppError("كلمة المرور الجديدة وتأكيدها غير متطابقتين", 400));
+  }
+
+  // Fetch user WITH password (select it back since it is normally excluded)
+  const user = await User.findById(user_id).select("+password");
+  if (!user) return next(new AppError("المستخدم غير موجود", 404));
+
+  const isMatch = await bcrypt.compare(current_password, user.password);
+  if (!isMatch) {
+    return next(new AppError("كلمة المرور الحالية غير صحيحة", 401));
+  }
+
+  const saltRounds = Number(process.env.BCRYPT_SALT_ROUNDS) || 12;
+  const hashed = await bcrypt.hash(new_password, saltRounds);
+
+  await User.findByIdAndUpdate(user_id, { password: hashed });
+
+  res.status(200).json({
+    status: "success",
+    message: "تم تغيير كلمة المرور بنجاح",
   });
 });

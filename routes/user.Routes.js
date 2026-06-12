@@ -21,6 +21,12 @@ router.patch(
   userController.updateMe,
 );
 
+router.patch(
+  "/change-password",
+  auth.protect,
+  userController.changePassword,
+);
+
 router.get(
   "/stats",
   userController.userStats
