@@ -360,37 +360,53 @@ module.exports = (req, res, next) => {
     if (req.originalUrl.includes("/refresh")) return;
 
     // ─── Only log important / write APIs ─────────────────────────────────────
-    // Skip noisy read-only polling routes that produce no significant audit value
-    const SKIP_PATTERNS = [
-      /^\/api\/doctors\/best(\?|$)/,
-      /^\/api\/doctors(\?|$)/,
-      /^\/api\/doctors\/[^/]+\/profile(\?|$)/,
-      /^\/api\/clinic\/best(\?|$)/,
-      /^\/api\/clinics(\?|$)/,
-      /^\/api\/clinics\/[^/]+(\?|$)/,
-      /^\/api\/book\/slots(\?|$)/,
-      /^\/api\/bookings\/slots(\?|$)/,
-      /^\/api\/notifications\/me(\?|$)/,
-      /^\/api\/notifications\/list(\?|$)/,
-      /^\/api\/user\/me(\?|$)/,
-      /^\/api\/doctors\/dashboard(\?|$)/,
-      /^\/api\/admin\/admin-stats(\?|$)/,
-      /^\/api\/admin\/dashboard(\?|$)/,
-      /^\/api\/clinic\/my-stats(\?|$)/,
-      /^\/api\/clinic\/stats(\?|$)/,
-      /^\/api\/clinic\/bookings-stream(\?|$)/,
-      /^\/api\/admin\/bookings(\?|$)/,
-      /^\/api\/admin\/patients(\?|$)/,
-      /^\/api\/admin\/doctors(\?|$)/,
-      /^\/api\/admin\/staff(\?|$)/,
-      /^\/api\/admin\/clinics(\?|$)/,
-      /^\/api\/ratings\/(doctor|clinic|staff)\/[^/]+(\?|$)/,
-    ];
+    // Skip noisy read-only polling routes or specific routes that produce no significant audit value
+    const shouldSkip = (() => {
+      // GET requests to skip
+      const GET_SKIP_PATTERNS = [
+        /^\/api\/doctors\/best(\?|$)/,
+        /^\/api\/doctors(\?|$)/,
+        /^\/api\/doctors\/[^/]+\/profile(\?|$)/,
+        /^\/api\/clinic\/best(\?|$)/,
+        /^\/api\/clinics(\?|$)/,
+        /^\/api\/clinics\/[^/]+(\?|$)/,
+        /^\/api\/book\/slots(\?|$)/,
+        /^\/api\/bookings\/slots(\?|$)/,
+        /^\/api\/notifications\/me(\?|$)/,
+        /^\/api\/notifications\/list(\?|$)/,
+        /^\/api\/user\/me(\?|$)/,
+        /^\/api\/doctors\/dashboard(\?|$)/,
+        /^\/api\/admin\/admin-stats(\?|$)/,
+        /^\/api\/admin\/dashboard(\?|$)/,
+        /^\/api\/clinic\/my-stats(\?|$)/,
+        /^\/api\/clinic\/stats(\?|$)/,
+        /^\/api\/clinic\/bookings-stream(\?|$)/,
+        /^\/api\/admin\/bookings(\?|$)/,
+        /^\/api\/admin\/patients(\?|$)/,
+        /^\/api\/admin\/doctors(\?|$)/,
+        /^\/api\/admin\/staff(\?|$)/,
+        /^\/api\/admin\/clinics(\?|$)/,
+        /^\/api\/ratings\/(doctor|clinic|staff)\/[^/]+(\?|$)/,
+        /^\/api\/book\/my-bookings(\?|$)/,
+        /^\/api\/prescriptions\/my-prescriptions(\?|$)/,
+        /^\/api\/prescriptions\/[^/]+(\?|$)/,
+      ];
 
-    const url = req.originalUrl.split("?")[0];
-    const shouldSkip =
-      SKIP_PATTERNS.some((pattern) => pattern.test(req.originalUrl)) &&
-      req.method === "GET";
+      if (req.method === "GET" && GET_SKIP_PATTERNS.some((pattern) => pattern.test(req.originalUrl))) {
+        return true;
+      }
+
+      // PATCH requests to skip
+      const PATCH_SKIP_PATTERNS = [
+        /^\/api\/notifications\/[^/]+\/read(\?|$)/,
+      ];
+
+      if (req.method === "PATCH" && PATCH_SKIP_PATTERNS.some((pattern) => pattern.test(req.originalUrl))) {
+        return true;
+      }
+
+      return false;
+    })();
 
     if (shouldSkip) return;
     // ─────────────────────────────────────────────────────────────────────────

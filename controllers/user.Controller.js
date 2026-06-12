@@ -211,7 +211,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     if (normalize(phone) !== null) update.phone = normalize(phone);
     if (normalize(work_from) !== null) update.work_from = normalize(work_from);
     if (normalize(work_to) !== null) update.work_to = normalize(work_to);
-    if (normalize(specialist) !== null) update.specialist = normalize(specialist);
+    // specialist cannot be updated
     if (normalize(work_days) !== null) update.work_days = normalize(work_days);
     if (normalize(location) !== null) update.location = normalize(location);
     if (normalize(licence) !== null) update.licence = normalize(licence);
@@ -269,7 +269,7 @@ exports.updateMe = catchAsync(async (req, res, next) => {
     if (normalize(years_of_experience) !== null) update.years_of_experience = normalize(years_of_experience);
     if (normalize(bio) !== null) update.bio = normalize(bio);
     if (normalize(phone) !== null) update.phone = normalize(phone);
-    if (normalize(specialist) !== null) update.specialist = normalize(specialist);
+    // specialist cannot be updated
     if (normalize(work_days) !== null) update.work_days = normalize(work_days);
     if (normalize(work_from) !== null) update.work_from = normalize(work_from);
     if (normalize(work_to) !== null) update.work_to = normalize(work_to);
