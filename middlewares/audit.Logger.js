@@ -354,6 +354,42 @@ module.exports = (req, res, next) => {
     // Skip logging refresh token endpoint
     if (req.originalUrl.includes("/refresh")) return;
 
+    // ─── Only log important / write APIs ─────────────────────────────────────
+    // Skip noisy read-only polling routes that produce no significant audit value
+    const SKIP_PATTERNS = [
+      /^\/api\/doctors\/best(\?|$)/,
+      /^\/api\/doctors(\?|$)/,
+      /^\/api\/doctors\/[^/]+\/profile(\?|$)/,
+      /^\/api\/clinic\/best(\?|$)/,
+      /^\/api\/clinics(\?|$)/,
+      /^\/api\/clinics\/[^/]+(\?|$)/,
+      /^\/api\/book\/slots(\?|$)/,
+      /^\/api\/bookings\/slots(\?|$)/,
+      /^\/api\/notifications\/me(\?|$)/,
+      /^\/api\/notifications\/list(\?|$)/,
+      /^\/api\/user\/me(\?|$)/,
+      /^\/api\/doctors\/dashboard(\?|$)/,
+      /^\/api\/admin\/admin-stats(\?|$)/,
+      /^\/api\/admin\/dashboard(\?|$)/,
+      /^\/api\/clinic\/my-stats(\?|$)/,
+      /^\/api\/clinic\/stats(\?|$)/,
+      /^\/api\/clinic\/bookings-stream(\?|$)/,
+      /^\/api\/admin\/bookings(\?|$)/,
+      /^\/api\/admin\/patients(\?|$)/,
+      /^\/api\/admin\/doctors(\?|$)/,
+      /^\/api\/admin\/staff(\?|$)/,
+      /^\/api\/admin\/clinics(\?|$)/,
+      /^\/api\/ratings\/(doctor|clinic|staff)\/[^/]+(\?|$)/,
+    ];
+
+    const url = req.originalUrl.split("?")[0];
+    const shouldSkip =
+      SKIP_PATTERNS.some((pattern) => pattern.test(req.originalUrl)) &&
+      req.method === "GET";
+
+    if (shouldSkip) return;
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Fire-and-forget; never block or delay the response.
     (async () => {
       const requestIp = getRealIp(req);

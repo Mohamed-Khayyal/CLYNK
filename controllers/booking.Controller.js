@@ -209,8 +209,15 @@ exports.createBooking = catchAsync(async (req, res) => {
 
   await createNotification({
     user_id: booking.target.user_id,
-    title: "New booking received",
-    message: `A booking was scheduled on ${booking_date} from ${booking_from} to ${booking.booking_to}.`,
+    title: "حجز جديد",
+    message: `تم جدولة حجز جديد بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
+  });
+
+  // Notify the patient too
+  await createNotification({
+    user_id: patient_user_id,
+    title: "تم تأكيد حجزك",
+    message: `تم تأكيد حجزك مع ${booking.target.full_name} بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
   });
 
   res.status(201).json({ status: "success", booking_id: booking.booking_id, prescription_access_status: booking.prescription_access_status });
@@ -228,8 +235,8 @@ exports.createProviderBooking = catchAsync(async (req, res) => {
 
   await createNotification({
     user_id: patient.patient_user_id,
-    title: "Booking created",
-    message: `${booking.target.full_name} scheduled a booking for ${booking_date} from ${booking_from} to ${booking.booking_to}.`,
+    title: "تم إنشاء حجز لك",
+    message: `قام ${booking.target.full_name} بجدولة حجز لك بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
   });
 
   res.status(201).json({

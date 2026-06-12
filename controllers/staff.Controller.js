@@ -115,7 +115,7 @@ exports.verifyStaff = catchAsync(async (req, res, next) => {
   }
 
   await Staff.findByIdAndUpdate(staffId, { is_verified: true });
-  await createNotification({ user_id: staff.user_id, title: "Clinic joined", message: `You have been verified by ${req.clinic.name} and can now accept bookings.` });
+  await createNotification({ user_id: staff.user_id, title: "تم توثيق حسابك في العيادة", message: `تم توثيقك من قِبل عيادة وأصبح بإمكانك الآن استقبال الحجوزات.` });
 
   res.status(200).json({ status: "success", message: "Staff member has been verified successfully" });
 });

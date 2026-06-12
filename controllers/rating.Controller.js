@@ -1,6 +1,7 @@
 const AppError = require("../utilts/app.Error");
 const catchAsync = require("../utilts/catch.Async");
 const mongoose = require("mongoose");
+const { createNotification } = require("../utilts/notification");
 
 const Doctor = require("../models/Doctor.model");
 const Clinic = require("../models/Clinic.model");
@@ -84,6 +85,15 @@ exports.rateDoctor = catchAsync(async (req, res, next) => {
 
   const result = await upsertRating({ patient_user_id: req.user.user_id, doctor_id: doctorId, rating, comment });
 
+  // Notify the doctor only when a new rating is created (not an update)
+  if (result.action === "created") {
+    createNotification({
+      user_id: doctor.user_id,
+      title: "تقييم جديد",
+      message: `قام ${patient.full_name} بتقييمك بـ ${rating} نجوم وكتب: "${comment.slice(0, 80)}${comment.length > 80 ? '...' : ''}".`,
+    }).catch(() => {});
+  }
+
   res.status(result.action === "created" ? 201 : 200).json({
     status: "success",
     message: result.action === "created" ? "تم إنشاء تقييم الطبيب" : "تم تحديث تقييم الطبيب",
@@ -105,6 +115,15 @@ exports.rateClinic = catchAsync(async (req, res, next) => {
 
   const result = await upsertRating({ patient_user_id: req.user.user_id, clinic_id: clinicId, rating, comment });
 
+  // Notify the clinic owner on new rating
+  if (result.action === "created") {
+    createNotification({
+      user_id: clinic.owner_user_id,
+      title: "تقييم جديد للعيادة",
+      message: `حصلت عيادتك على تقييم جديد بـ ${rating} نجوم من أحد المرضى.`,
+    }).catch(() => {});
+  }
+
   res.status(result.action === "created" ? 201 : 200).json({
     status: "success",
     message: result.action === "created" ? "تم إنشاء تقييم العيادة" : "تم تحديث تقييم العيادة",
@@ -125,6 +144,15 @@ exports.rateStaff = catchAsync(async (req, res, next) => {
   if (!booked) return next(new AppError("You can rate only staff you previously booked with", 403));
 
   const result = await upsertRating({ patient_user_id: req.user.user_id, staff_id: staffId, rating, comment });
+
+  // Notify the staff member on new rating
+  if (result.action === "created") {
+    createNotification({
+      user_id: staff.user_id,
+      title: "تقييم جديد",
+      message: `قام أحد المرضى بتقييمك بـ ${rating} نجوم وكتب: "${comment.slice(0, 80)}${comment.length > 80 ? '...' : ''}".`,
+    }).catch(() => {});
+  }
 
   res.status(result.action === "created" ? 201 : 200).json({
     status: "success",
