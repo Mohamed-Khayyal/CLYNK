@@ -233,6 +233,52 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   const cancelledBookings = bookingsList.filter((b) => b.status === "cancelled");
   const cancellationRate = totalBookings > 0 ? Math.round((cancelledBookings.length / totalBookings) * 100) : 0;
 
+  // Fetch all unique patient details
+  const PatientModel = require("../models/Patient.model");
+  const patientUserIds = [...uniquePatientsSet];
+  const patientsList = await PatientModel.find({ user_id: { $in: patientUserIds } }).populate("user_id", "photo gender").lean();
+  const patientMap = new Map(patientsList.map(p => [String(p.user_id), p]));
+
+  let maleCount = 0;
+  let femaleCount = 0;
+  patientsList.forEach((p) => {
+    if (p.gender === "male") maleCount++;
+    else if (p.gender === "female") femaleCount++;
+  });
+
+  const uniquePatientsList = [];
+  const seenPatients = new Set();
+  bookingsList.forEach((b) => {
+    const pId = String(b.patient_user_id);
+    if (!pId || seenPatients.has(pId)) return;
+    
+    seenPatients.add(pId);
+    const patient = patientMap.get(pId);
+    if (patient) {
+      uniquePatientsList.push({
+        name: patient.full_name,
+        gender: patient.gender === "male" ? "ذكر" : patient.gender === "female" ? "أنثى" : "—",
+        department: specialistName,
+        date: getFormattedDate(b.booking_date),
+      });
+    }
+  });
+
+  // Fetch patient profiles for reports (prescriptions)
+  const prescriptionPatientUserIds = [...new Set(completedBookings.map(rx => rx.patient_user_id).filter(Boolean))];
+  const rxPatients = await PatientModel.find({ user_id: { $in: prescriptionPatientUserIds } }).lean();
+  const rxPatientMap = new Map(rxPatients.map(p => [String(p.user_id), p]));
+
+  const reportsList = completedBookings.slice(0, 5).map((rx) => {
+    const patient = rxPatientMap.get(String(rx.patient_user_id));
+    return {
+      id: String(rx._id),
+      name: patient?.full_name || "Patient",
+      status: "available",
+      description: rx.diagnosis || "تقرير طبي",
+    };
+  });
+
   const doctorObj = {
     full_name: providerDoc?.full_name || "General",
     specialist: specialistName,
@@ -244,37 +290,46 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
 
   const todayDateStr = new Date().toISOString().slice(0, 10);
 
-  const appointmentRows = bookingsList.map((b) => ({
-    id: String(b.patient_user_id || b._id),
-    name: `Patient`,
-    type: "زيارة",
-    doctor: doctorObj.full_name,
-    status: b.status || "confirmed",
-    date: [getFormattedDate(b.booking_date), b.booking_from].filter(Boolean).join(", "),
-  }));
+  const appointmentRows = bookingsList.map((b) => {
+    const patient = patientMap.get(String(b.patient_user_id));
+    return {
+      id: String(b.patient_user_id || b._id),
+      name: patient?.full_name || "Patient",
+      type: "زيارة",
+      doctor: doctorObj.full_name,
+      status: b.status || "confirmed",
+      date: [getFormattedDate(b.booking_date), b.booking_from].filter(Boolean).join(", "),
+    };
+  });
 
   const appointmentRequests = bookingsList
     .filter((b) => b.prescription_access_status === "pending")
     .slice(0, 5)
-    .map((b) => ({
-      id: b._id,
-      name: `Patient`,
-      specialty: specialistName || "General",
-      time: [getFormattedDate(b.booking_date), b.booking_from].filter(Boolean).join(", "),
-      image: `https://i.pravatar.cc/40?u=${b.patient_user_id || b._id}`,
-      status: "pending",
-    }));
+    .map((b) => {
+      const patient = patientMap.get(String(b.patient_user_id));
+      return {
+        id: b._id,
+        name: patient?.full_name || "Patient",
+        specialty: specialistName || "General",
+        time: [getFormattedDate(b.booking_date), b.booking_from].filter(Boolean).join(", "),
+        image: patient?.user_id?.photo || "/images/blank-profile-picture.png",
+        status: "pending",
+      };
+    });
 
   const todayAppointmentsList = bookingsList
     .filter((b) => getFormattedDate(b.booking_date) === todayDateStr)
     .sort((a, b) => (a.booking_from || "").localeCompare(b.booking_from || ""))
-    .map((b) => ({
-      id: b._id,
-      name: `Patient`,
-      type: b.status || "confirmed",
-      date: getFormattedDate(b.booking_date),
-      time: b.booking_from,
-    }));
+    .map((b) => {
+      const patient = patientMap.get(String(b.patient_user_id));
+      return {
+        id: b._id,
+        name: patient?.full_name || "Patient",
+        type: b.status || "confirmed",
+        date: getFormattedDate(b.booking_date),
+        time: b.booking_from,
+      };
+    });
 
   res.status(200).json({
     status: "success",
@@ -294,11 +349,11 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
         patients: { value: totalPatients, percentage: 0, trend: buildTrend(totalPatients) },
       },
       weeklyPatients: buildWeeklyPatients(bookingsList),
-      genderStats: { male: 50, female: 50, total: 100 },
+      genderStats: { male: maleCount, female: femaleCount, total: totalPatients },
       appointmentRequests,
       appointments: appointmentRows,
-      patients: [],
-      reports: [],
+      patients: uniquePatientsList,
+      reports: reportsList,
       todayAppointments: todayAppointmentsList,
     },
   });

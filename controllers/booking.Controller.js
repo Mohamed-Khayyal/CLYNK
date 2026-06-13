@@ -279,7 +279,7 @@ exports.getMyBookings = catchAsync(async (req, res, next) => {
   const bookings = await Booking.find(filter).sort({ booking_date: 1, booking_from: 1 }).lean();
 
   const result = await Promise.all(bookings.map(async (b) => {
-    const patient = await Patient.findOne({ user_id: b.patient_user_id }).lean();
+    const patient = await Patient.findOne({ user_id: b.patient_user_id }).populate("user_id", "photo").lean();
     let doctor_name = null;
     if (b.doctor_id) {
       const doc = await Doctor.findById(b.doctor_id).lean();
@@ -299,6 +299,7 @@ exports.getMyBookings = catchAsync(async (req, res, next) => {
       prescription_access_responded_at: b.prescription_access_responded_at,
       patient_name: patient?.full_name || null,
       patient_phone: patient?.phone || null,
+      patient_photo: patient?.user_id?.photo || null,
       doctor_name,
     };
   }));
