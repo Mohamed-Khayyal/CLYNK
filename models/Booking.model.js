@@ -44,20 +44,18 @@ bookingSchema.pre("save", function (next) {
   next();
 });
 
-bookingSchema.pre("findOneAndUpdate", function (next) {
+bookingSchema.pre("findOneAndUpdate", function () {
   const update = this.getUpdate();
   if (update && (update.status === "cancelled" || update.status === "rejected")) {
     update.prescription_access_status = "rejected";
   }
-  next();
 });
 
-bookingSchema.pre("updateOne", function (next) {
+bookingSchema.pre("updateOne", function () {
   const update = this.getUpdate();
   if (update && (update.status === "cancelled" || update.status === "rejected")) {
     update.prescription_access_status = "rejected";
   }
-  next();
 });
 
 module.exports = mongoose.model("Booking", bookingSchema);
