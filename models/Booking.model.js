@@ -36,4 +36,28 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
+// Enforce prescription access rejection when booking is cancelled or rejected
+bookingSchema.pre("save", function (next) {
+  if (this.isModified("status") && (this.status === "cancelled" || this.status === "rejected")) {
+    this.prescription_access_status = "rejected";
+  }
+  next();
+});
+
+bookingSchema.pre("findOneAndUpdate", function (next) {
+  const update = this.getUpdate();
+  if (update && (update.status === "cancelled" || update.status === "rejected")) {
+    update.prescription_access_status = "rejected";
+  }
+  next();
+});
+
+bookingSchema.pre("updateOne", function (next) {
+  const update = this.getUpdate();
+  if (update && (update.status === "cancelled" || update.status === "rejected")) {
+    update.prescription_access_status = "rejected";
+  }
+  next();
+});
+
 module.exports = mongoose.model("Booking", bookingSchema);
