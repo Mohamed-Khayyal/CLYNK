@@ -312,6 +312,16 @@ exports.createPrescription = catchAsync(async (req, res, next) => {
     ...payload,
   });
 
+  await Booking.findByIdAndUpdate(bookingId, {
+    status: "completed",
+  });
+
+  await createNotification({
+    user_id: booking.patient_user_id,
+    title: "تحديث حالة الحجز",
+    message: "تم تغيير حالة حجزك إلى: مكتمل.",
+  });
+
   await createNotification({
     user_id: booking.patient_user_id,
     title: "روشتة جديدة",
