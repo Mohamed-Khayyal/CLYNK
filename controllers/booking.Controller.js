@@ -431,3 +431,68 @@ exports.cancelClinicBooking = catchAsync(async (req, res, next) => {
 
   res.status(200).json({ status: "success", message: "تم إلغاء الحجز بنجاح" });
 });
+
+exports.updateBookingStatus = catchAsync(async (req, res, next) => {
+  const booking_id = parseId(req.params.id);
+  if (!booking_id) return next(new AppError("Invalid booking id", 400));
+  const { status } = req.body;
+  const { user_id, user_type } = req.user;
+
+  const validStatuses = ["pending", "confirmed", "completed", "rejected", "cancelled"];
+  if (!validStatuses.includes(status)) {
+    return next(new AppError("Invalid status value", 400));
+  }
+
+  const booking = await Booking.findById(booking_id);
+  if (!booking) return next(new AppError("Booking not found", 404));
+
+  let authorized = false;
+
+  if (user_type === "patient") {
+    // Patients can only cancel their own bookings
+    authorized = String(booking.patient_user_id) === String(user_id) && status === "cancelled";
+  } else if (user_type === "doctor") {
+    // Doctors can confirm, complete, or reject bookings assigned to them
+    const doctor = await Doctor.findOne({ user_id }).lean();
+    authorized = doctor && String(doctor._id) === String(booking.doctor_id);
+  } else if (user_type === "staff") {
+    // Staff can confirm, complete, or reject bookings in their clinic
+    const staff = await Staff.findOne({ user_id }).lean();
+    authorized = staff && String(staff._id) === String(booking.staff_id);
+  }
+
+  if (!authorized) {
+    return next(new AppError("Access denied or unauthorized status transition", 403));
+  }
+
+  booking.status = status;
+  if (status === "rejected" || status === "cancelled") {
+    booking.prescription_access_status = "rejected";
+  }
+  await booking.save();
+
+  // Send notifications
+  if (user_type === "patient") {
+    const targetUserId = booking.doctor_id 
+      ? (await Doctor.findById(booking.doctor_id))?.user_id 
+      : booking.staff_id 
+        ? (await Staff.findById(booking.staff_id))?.user_id 
+        : null;
+
+    if (targetUserId) {
+      await createNotification({
+        user_id: targetUserId,
+        title: "تم إلغاء الحجز",
+        message: "قام المريض بإلغاء حجزه.",
+      });
+    }
+  } else {
+    await createNotification({
+      user_id: booking.patient_user_id,
+      title: "تحديث حالة الحجز",
+      message: `تم تغيير حالة حجزك إلى: ${status === "confirmed" ? "مؤكد" : status === "completed" ? "مكتمل" : status === "rejected" ? "مرفوض" : "ملغي"}.`,
+    });
+  }
+
+  res.status(200).json({ status: "success", message: "Booking status updated successfully", data: booking });
+});

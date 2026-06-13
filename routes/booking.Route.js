@@ -10,6 +10,7 @@ const {
   cancelBooking,
   getClinicBookings,
   cancelClinicBooking,
+  updateBookingStatus,
 } = require("../controllers/booking.Controller");
 const { isClinicOwner } = require("../middlewares/isClinicOwner");
 
@@ -43,6 +44,13 @@ router.patch(
   restrictTo("clinic"),
   isClinicOwner,
   cancelClinicBooking
+);
+
+router.patch(
+  "/:id/status",
+  protect,
+  restrictTo("doctor", "staff", "patient"),
+  updateBookingStatus,
 );
 
 router.patch(

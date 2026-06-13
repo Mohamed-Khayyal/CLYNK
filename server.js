@@ -76,6 +76,48 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
+const startNoShowChecker = () => {
+  const Booking = require("./models/Booking.model");
+  // Run every 5 minutes
+  setInterval(async () => {
+    try {
+      const now = new Date();
+      const bookings = await Booking.find({
+        status: { $in: ["pending", "confirmed"] },
+      });
+
+      for (const b of bookings) {
+        if (!b.booking_date || !b.booking_from) continue;
+        
+        const startDateTime = new Date(`${b.booking_date}T${b.booking_from}:00`);
+        if (isNaN(startDateTime.getTime())) continue;
+
+        const cutoffTime = new Date(startDateTime.getTime() + 30 * 60 * 1000);
+
+        if (now > cutoffTime) {
+          console.log(`Auto-cancelling no-show booking ${b._id} (scheduled for ${b.booking_date} ${b.booking_from})`);
+          b.status = "cancelled";
+          b.prescription_access_status = "rejected";
+          await b.save();
+
+          try {
+            const { createNotification } = require("./utilts/notification");
+            await createNotification({
+              user_id: b.patient_user_id,
+              title: "تم إلغاء الحجز تلقائياً",
+              message: "تم إلغاء حجزك لعدم الحضور في الموعد المحدد (مرور أكثر من 30 دقيقة).",
+            });
+          } catch (err) {
+            console.error("Error creating no-show notification:", err.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error in no-show checker background job:", error);
+    }
+  }, 5 * 60 * 1000); // 5 minutes
+};
+
 let server;
 
 const startServer = async () => {
@@ -87,6 +129,8 @@ const startServer = async () => {
       console.log(`Server running on port ${PORT}`);
     });
   }
+
+  startNoShowChecker();
 };
 
 startServer();
