@@ -19,6 +19,7 @@ const bookingRoute = require("./routes/booking.Route");
 const notificationRoute = require("./routes/notification.Route");
 const ratingRoute = require("./routes/rating.Route");
 const prescriptionRoute = require("./routes/prescription.Route");
+const paymentRoute = require("./routes/payment.Route");
 
 const {
   globalLimiter,
@@ -69,6 +70,7 @@ app.use("/api/notifications", notificationRoute);
 app.use("/api/admin", adminRoute);
 app.use("/api/ratings", ratingRoute);
 app.use("/api/prescriptions", prescriptionRoute);
+app.use("/api/payments", paymentRoute);
 
 app.use((req, res, next) => {
   next(new AppError(`Cannot find ${req.originalUrl} on this server`, 404));

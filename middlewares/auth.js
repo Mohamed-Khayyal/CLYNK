@@ -59,6 +59,7 @@ exports.protect = catchAsync(async (req, res, next) => {
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.user_type)) {
+      console.log(`[AUTH 403] URL: ${req.originalUrl}, UserType: ${req.user.user_type}, Required: ${roles}`);
       return next(
         new AppError("You do not have permission to perform this action.", 403),
       );

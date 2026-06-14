@@ -142,7 +142,7 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   let specialistName = "General";
   let providerDoc = null;
 
-  const doctor = await Doctor.findOne({ user_id, is_verified: true }).lean();
+  const doctor = await Doctor.findOne({ user_id }).lean();
   if (doctor) {
     doctor_id = doctor._id;
     specialistName = doctor.specialist || "General";
@@ -150,10 +150,6 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   } else {
     const staff = await Staff.findOne({
       user_id,
-      work_days: { $ne: null },
-      work_from: { $ne: null },
-      work_to: { $ne: null },
-      is_verified: true,
     }).lean();
     if (!staff) return next(new AppError("Doctor profile not found", 404));
     staff_id = staff._id;
