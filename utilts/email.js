@@ -8,6 +8,9 @@ const escapeHtml = (value = "") =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+const frontendUrl = process.env.ALLOWED_ORIGINS || "http://localhost:3000";
+const logoUrl = `${frontendUrl}/logo.png`;
+
 module.exports = class Email {
   constructor(user, url) {
     this.to = user.email;
@@ -15,8 +18,8 @@ module.exports = class Email {
     this.url = url;
 
     this.from = process.env.EMAIL_FROM
-      ? `Clynk <${process.env.EMAIL_FROM}>`
-      : "Clynk";
+      ? `Medaura <${process.env.EMAIL_FROM}>`
+      : "Medaura";
   }
 
   newTransport() {
@@ -49,7 +52,7 @@ module.exports = class Email {
     const text = [
       `Hi ${this.firstName},`,
       "",
-      "We received a request to reset the password for your Clynk account.",
+      "We received a request to reset the password for your Medaura account.",
       `Reset your password here: ${this.url}`,
       "",
       `This link expires in ${expiresMinutes} minutes.`,
@@ -58,7 +61,10 @@ module.exports = class Email {
 
     const html = `
       <div style="font-family:Arial,sans-serif;padding:24px">
-        <h2>Reset your Clynk password</h2>
+        <div style="margin-bottom:20px;">
+          <img src="${logoUrl}" alt="Medaura Logo" style="height:40px;display:block;" />
+        </div>
+        <h2>Reset your Medaura password</h2>
 
         <p>Hi ${escapedFirstName},</p>
 
@@ -141,11 +147,14 @@ module.exports = class Email {
                 padding:20px;
               "
             >
-              <h2 style="margin:0">
-                Clynk
-              </h2>
+              <div style="display:flex;align-items:center;">
+                <img src="${logoUrl}" alt="Medaura Logo" style="height:32px;display:inline-block;vertical-align:middle;margin-right:10px;" />
+                <h2 style="margin:0;display:inline-block;vertical-align:middle;">
+                  Medaura
+                </h2>
+              </div>
 
-              <small>Password reset code</small>
+              <small style="display:block;margin-top:5px;">Password reset code</small>
             </td>
           </tr>
 
@@ -207,15 +216,18 @@ module.exports = class Email {
     const text = [
       `Hi ${this.firstName},`,
       "",
-      "Welcome to Clynk.",
+      "Welcome to Medaura.",
       "Your account was created successfully.",
     ].join("\n");
 
     const html = `
       <div style="padding:24px;font-family:Arial">
+        <div style="margin-bottom:20px;">
+          <img src="${logoUrl}" alt="Medaura Logo" style="height:40px;display:block;" />
+        </div>
 
         <h2>
-          Welcome to Clynk
+          Welcome to Medaura
         </h2>
 
         <p>
@@ -234,7 +246,7 @@ module.exports = class Email {
     `;
 
     await this.send(
-      "Welcome to Clynk",
+      "Welcome to Medaura",
       text,
       html
     );
@@ -253,6 +265,9 @@ module.exports = class Email {
 
     const html = `
       <div style="padding:24px;font-family:Arial">
+        <div style="margin-bottom:20px;">
+          <img src="${logoUrl}" alt="Medaura Logo" style="height:40px;display:block;" />
+        </div>
 
         <h2>
           Account under review
