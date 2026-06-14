@@ -33,15 +33,15 @@ const parseRatingBody = (body) => {
 };
 
 const hasConfirmedDoctorBooking = async (patientUserId, doctorId) =>
-  Booking.exists({ patient_user_id: patientUserId, doctor_id: doctorId, status: "confirmed" });
+  Booking.exists({ patient_user_id: patientUserId, doctor_id: doctorId, status: { $in: ["confirmed", "completed"] } });
 
 const hasConfirmedClinicBooking = async (patientUserId, clinicId) => {
   const staffIds = await Staff.find({ clinic_id: clinicId }).distinct("_id");
-  return Booking.exists({ patient_user_id: patientUserId, staff_id: { $in: staffIds }, status: "confirmed" });
+  return Booking.exists({ patient_user_id: patientUserId, staff_id: { $in: staffIds }, status: { $in: ["confirmed", "completed"] } });
 };
 
 const hasConfirmedStaffBooking = async (patientUserId, staffId) =>
-  Booking.exists({ patient_user_id: patientUserId, staff_id: staffId, status: "confirmed" });
+  Booking.exists({ patient_user_id: patientUserId, staff_id: staffId, status: { $in: ["confirmed", "completed"] } });
 
 const upsertRating = async ({ patient_user_id, doctor_id = null, clinic_id = null, staff_id = null, rating, comment }) => {
   const query = { patient_user_id };
