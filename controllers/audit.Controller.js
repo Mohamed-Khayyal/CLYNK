@@ -54,6 +54,21 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
     }
   }
 
+  const ip =
+    typeof req.query.ip === "string" && req.query.ip.trim()
+      ? req.query.ip.trim()
+      : undefined;
+
+  const dateFrom =
+    typeof req.query.dateFrom === "string" && req.query.dateFrom.trim()
+      ? req.query.dateFrom.trim()
+      : undefined;
+
+  const dateTo =
+    typeof req.query.dateTo === "string" && req.query.dateTo.trim()
+      ? req.query.dateTo.trim()
+      : undefined;
+
   let actor_role;
   if (req.query.actor_role !== undefined) {
     actor_role = String(req.query.actor_role).toLowerCase().trim();
@@ -76,6 +91,9 @@ exports.listAuditLogs = catchAsync(async (req, res, next) => {
     status_code,
     path_contains,
     location_contains,
+    ip,
+    dateFrom,
+    dateTo,
   });
 
   res.status(200).json({

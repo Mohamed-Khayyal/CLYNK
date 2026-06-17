@@ -73,6 +73,30 @@ const globalErrorHandler = (err, req, res, next) => {
     console.log(err.stack);
   }
 
+  let actor_user_id = req.user?.user_id || null;
+  let actor_role = req.user?.user_type || "guest";
+
+  if (!req.user) {
+    try {
+      let token;
+      if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
+        token = req.headers.authorization.split(" ")[1];
+      } else if (req.cookies && req.cookies.jwt) {
+        token = req.cookies.jwt;
+      }
+      if (token) {
+        const jwt = require("jsonwebtoken");
+        const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+        if (decoded && decoded.role) {
+          actor_user_id = decoded.user_id || null;
+          actor_role = decoded.role || "guest";
+        }
+      }
+    } catch (err) {
+      // Silently fail if token is invalid
+    }
+  }
+
   logAuditEvent({
     level: "error",
     event_type: "http_error",
@@ -80,8 +104,8 @@ const globalErrorHandler = (err, req, res, next) => {
     method: req.method,
     path: req.originalUrl,
     status_code: err.statusCode,
-    actor_user_id: req.user?.user_id || null,
-    actor_role: req.user?.user_type || "guest",
+    actor_user_id,
+    actor_role,
     ip: req.ip,
     user_agent: req.get("user-agent") || null,
     error_message: err.message,

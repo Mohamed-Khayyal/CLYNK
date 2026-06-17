@@ -116,61 +116,46 @@ const getRealIp = (req) => {
 
 // IP geolocation via ip-api.com
 
-/**
- * Resolve an IP address to city/country/lat/lon.
- * Returns null on any failure so logging is never blocked.
- */
 const fetchIpLocation = (ip) =>
   new Promise((resolve) => {
-    const fields = [
-      "status",
-      "message",
-      "query",
-      "country",
-      "region",
-      "regionName",
-      "city",
-      "lat",
-      "lon",
-    ].join(",");
-
-    // Private/local IPs cannot be geolocated. The empty lookup lets ip-api
-    // detect the request's public outbound IP and return that location.
-    const ipPath = isPrivateIp(ip)
-      ? `/json/?fields=${fields}`
-      : `/json/${encodeURIComponent(ip)}?fields=${fields}`;
+    const ipPath = isPrivateIp(ip) ? "/json" : `/${encodeURIComponent(ip)}/json`;
 
     const options = {
-      hostname: "ip-api.com",
+      hostname: "ipinfo.io",
       path: ipPath,
       method: "GET",
       timeout: 3000,
     };
 
-    const request = http.request(options, (res) => {
+    const request = https.request(options, (res) => {
       let raw = "";
       res.on("data", (chunk) => { raw += chunk; });
       res.on("end", () => {
         try {
           const parsed = JSON.parse(raw);
-          if (parsed.status === "success") {
-            const latitude = parsed.lat ?? null;
-            const longitude = parsed.lon ?? null;
-            return resolve({
-              ip: normalizeIp(parsed.query) || null,
-              city: parsed.city || null,
-              region: parsed.regionName || null,
-              region_code: parsed.region || null,
-              country: parsed.country || null,
-              latitude,
-              longitude,
-              map_url:
-                latitude !== null && longitude !== null
-                  ? `https://www.google.com/maps?q=${latitude},${longitude}`
-                  : null,
-            });
+          if (parsed.error) return resolve(null);
+
+          let latitude = null;
+          let longitude = null;
+          if (parsed.loc) {
+            const parts = parsed.loc.split(",");
+            latitude = parseFloat(parts[0]);
+            longitude = parseFloat(parts[1]);
           }
-          resolve(null);
+
+          return resolve({
+            ip: normalizeIp(parsed.ip) || null,
+            city: parsed.city || null,
+            region: parsed.region || null,
+            region_code: null,
+            country: parsed.country || null,
+            latitude,
+            longitude,
+            map_url:
+              latitude !== null && longitude !== null
+                ? `https://www.google.com/maps?q=${latitude},${longitude}`
+                : null,
+          });
         } catch {
           resolve(null);
         }
@@ -381,15 +366,8 @@ module.exports = (req, res, next) => {
         /^\/api\/clinic\/my-stats(\?|$)/,
         /^\/api\/clinic\/stats(\?|$)/,
         /^\/api\/clinic\/bookings-stream(\?|$)/,
-        /^\/api\/admin\/bookings(\?|$)/,
-        /^\/api\/admin\/patients(\?|$)/,
-        /^\/api\/admin\/doctors(\?|$)/,
-        /^\/api\/admin\/staff(\?|$)/,
-        /^\/api\/admin\/clinics(\?|$)/,
         /^\/api\/ratings\/(doctor|clinic|staff)\/[^/]+(\?|$)/,
         /^\/api\/book\/my-bookings(\?|$)/,
-        /^\/api\/prescriptions\/my-prescriptions(\?|$)/,
-        /^\/api\/prescriptions\/[^/]+(\?|$)/,
       ];
 
       if (req.method === "GET" && GET_SKIP_PATTERNS.some((pattern) => pattern.test(req.originalUrl))) {
@@ -418,9 +396,47 @@ module.exports = (req, res, next) => {
       // Prefer client-provided GPS over approximate IP geolocation
       const clientLocation = getClientProvidedLocation(req);
 
+      // Try to resolve user from token if not already authenticated by router/guard middleware
+      let user = req.user;
+      if (!user) {
+        try {
+          let token;
+          if (
+            req.headers.authorization &&
+            req.headers.authorization.startsWith("Bearer")
+          ) {
+            token = req.headers.authorization.split(" ")[1];
+          } else if (req.cookies && req.cookies.jwt) {
+            token = req.cookies.jwt;
+          }
+
+          if (token) {
+            const jwt = require("jsonwebtoken");
+            const decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+            if (decoded && decoded.user_id) {
+              const User = require("../models/User.model");
+              const dbUser = await User.findById(decoded.user_id).select(
+                "email user_type is_active photo"
+              ).lean();
+              if (dbUser && dbUser.is_active) {
+                user = {
+                  user_id: dbUser._id,
+                  email: dbUser.email,
+                  user_type: dbUser.user_type,
+                  is_active: dbUser.is_active,
+                  photo: dbUser.photo,
+                };
+              }
+            }
+          }
+        } catch (err) {
+          // Silently fail if token is invalid or database query fails
+        }
+      }
+
       const [resolvedIpLocation, actorName, coordinateLocation] = await Promise.all([
         fetchIpLocation(requestIp),
-        fetchActorName(req.user),
+        fetchActorName(user),
         reverseGeocodeClientLocation(clientLocation),
       ]);
       const ipLocation = buildIpLocation(
@@ -430,7 +446,7 @@ module.exports = (req, res, next) => {
       );
       const ip = resolveAuditIp(requestIp, resolvedIpLocation);
 
-      const isAuthenticated = !!req.user;
+      const isAuthenticated = !!user;
 
       logAuditEvent({
         event_type: "http_request",
@@ -441,10 +457,10 @@ module.exports = (req, res, next) => {
         duration_ms: Date.now() - startedAt,
 
         // Actor identity
-        actor_user_id: req.user?.user_id || null,
+        actor_user_id: user?.user_id || null,
         actor_name: isAuthenticated ? (actorName || null) : null,
-        actor_email: req.user?.email || null,
-        actor_role: req.user?.user_type || "guest",
+        actor_email: user?.email || null,
+        actor_role: user?.user_type || "guest",
 
         // Network info
         ip,

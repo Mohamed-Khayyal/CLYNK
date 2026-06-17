@@ -68,6 +68,9 @@ const getAuditLogs = async ({
   status_code,
   path_contains,
   location_contains,
+  ip,
+  dateFrom,
+  dateTo,
 } = {}) => {
   const query = {};
 
@@ -77,6 +80,7 @@ const getAuditLogs = async ({
   if (method) query.method = { $regex: new RegExp(`^${method}$`, "i") };
   if (status_code !== undefined) query.status_code = Number(status_code);
   if (path_contains) query.path = { $regex: new RegExp(path_contains, "i") };
+  if (ip) query.ip = { $regex: new RegExp(ip, "i") };
   
   if (location_contains) {
     const regex = new RegExp(location_contains, "i");
@@ -85,6 +89,12 @@ const getAuditLogs = async ({
       { "ip_location.region": { $regex: regex } },
       { "ip_location.country": { $regex: regex } }
     ];
+  }
+
+  if (dateFrom || dateTo) {
+    query.timestamp = {};
+    if (dateFrom) query.timestamp.$gte = new Date(dateFrom);
+    if (dateTo) query.timestamp.$lte = new Date(dateTo);
   }
 
   const logs = await AuditLog.find(query)
