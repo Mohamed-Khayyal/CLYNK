@@ -468,6 +468,13 @@ module.exports = (req, res, next) => {
         ip_location: ipLocation,
 
         user_agent: req.get("user-agent") || null,
+        client_hints: {
+          model: req.get("sec-ch-ua-model") || null,
+          platform: req.get("sec-ch-ua-platform") || null,
+          platformVersion: req.get("sec-ch-ua-platform-version") || null,
+          mobile: req.get("sec-ch-ua-mobile") || null,
+          uaList: req.get("sec-ch-ua") || null,
+        },
         query: sanitizeAuditBody(req.query || {}),
         body: sanitizeAuditBody(req.body || {}),
       });

@@ -26,6 +26,13 @@ const auditLogSchema = new mongoose.Schema({
   },
 
   user_agent: { type: String },
+  client_hints: {
+    model: String,
+    platform: String,
+    platformVersion: String,
+    mobile: String,
+    uaList: String,
+  },
   query: { type: mongoose.Schema.Types.Mixed },
   body: { type: mongoose.Schema.Types.Mixed },
 
