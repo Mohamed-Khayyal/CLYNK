@@ -233,7 +233,7 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
   const PatientModel = require("../models/Patient.model");
   const patientUserIds = [...uniquePatientsSet];
   const patientsList = await PatientModel.find({ user_id: { $in: patientUserIds } }).populate("user_id", "photo gender").lean();
-  const patientMap = new Map(patientsList.map(p => [String(p.user_id), p]));
+  const patientMap = new Map(patientsList.map(p => [String(p.user_id?._id || p.user_id), p]));
 
   let maleCount = 0;
   let femaleCount = 0;
@@ -290,11 +290,14 @@ exports.getDoctorDashboard = catchAsync(async (req, res, next) => {
     const patient = patientMap.get(String(b.patient_user_id));
     return {
       id: String(b.patient_user_id || b._id),
+      booking_id: String(b._id),
       name: patient?.full_name || "Patient",
       type: "زيارة",
       doctor: doctorObj.full_name,
       status: b.status || "confirmed",
       date: [getFormattedDate(b.booking_date), b.booking_from].filter(Boolean).join(", "),
+      prescription_access_status: b.prescription_access_status || null,
+      patient_phone: patient?.phone || "",
     };
   });
 
