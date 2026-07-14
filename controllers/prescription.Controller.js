@@ -248,9 +248,7 @@ exports.respondToPrescriptionAccess = catchAsync(async (req, res, next) => {
 
   if (!booking) return next(new AppError("Booking not found", 404));
   if (String(booking.patient_user_id) !== String(req.user.user_id)) return next(new AppError("You can only respond to your own booking requests", 403));
-  if (nextStatus === "accepted" && booking.status !== "confirmed") {
-    return next(new AppError("Only confirmed bookings can receive prescription access approval", 400));
-  }
+
 
   const currentStatus = booking.prescription_access_status;
   const isRevocation = (currentStatus === "accepted" && nextStatus === "rejected");
