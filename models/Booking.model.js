@@ -36,6 +36,28 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: { createdAt: "created_at", updatedAt: "updated_at" } },
 );
 
+bookingSchema.index(
+  { doctor_id: 1, booking_date: 1, booking_from: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      doctor_id: { $type: "objectId" },
+      status: { $in: ["pending", "confirmed"] },
+    },
+  },
+);
+
+bookingSchema.index(
+  { staff_id: 1, booking_date: 1, booking_from: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      staff_id: { $type: "objectId" },
+      status: { $in: ["pending", "confirmed"] },
+    },
+  },
+);
+
 // Enforce prescription access rejection when booking is cancelled or rejected
 bookingSchema.pre("save", function () {
   if (this.isModified("status") && (this.status === "cancelled" || this.status === "rejected")) {

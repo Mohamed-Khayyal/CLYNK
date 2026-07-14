@@ -20,6 +20,7 @@ const mongoose = require("mongoose");
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_REGEX = /^\d{2}:\d{2}$/;
+const ACTIVE_BOOKING_STATUSES = ["pending", "confirmed"];
 
 const validateBookingTime = (booking_date, booking_from) => {
   if (!booking_date || !booking_from)
@@ -160,7 +161,7 @@ const assertSlotAvailable = async ({
   const overlap = await Booking.findOne({
     ...matchField,
     booking_date,
-    status: "confirmed",
+    status: { $in: ACTIVE_BOOKING_STATUSES },
     $and: [
       { booking_from: { $lt: booking_to } },
       { booking_to: { $gt: booking_from } },
@@ -181,7 +182,7 @@ const assertPatientAvailability = async ({
   const timeConflict = await Booking.findOne({
     patient_user_id,
     booking_date,
-    status: "confirmed",
+    status: { $in: ACTIVE_BOOKING_STATUSES },
     $and: [
       { booking_from: { $lt: booking_to } },
       { booking_to: { $gt: booking_from } },
@@ -196,7 +197,7 @@ const assertPatientAvailability = async ({
     patient_user_id,
     ...dayMatchField,
     booking_date,
-    status: "confirmed",
+    status: { $in: ACTIVE_BOOKING_STATUSES },
   }).lean();
   if (dayConflict)
     throw new AppError(
@@ -214,17 +215,26 @@ const insertBooking = async ({
   booking_to,
   status,
 }) => {
-  const booking = await Booking.create({
-    patient_user_id,
-    doctor_id: doctor_id || null,
-    staff_id: staff_id || null,
-    booking_date,
-    booking_from,
-    booking_to,
-    status: status || "pending",
-    prescription_access_status: "accepted",
-    prescription_access_responded_at: new Date(),
-  });
+  let booking;
+  try {
+    booking = await Booking.create({
+      patient_user_id,
+      doctor_id: doctor_id || null,
+      staff_id: staff_id || null,
+      booking_date,
+      booking_from,
+      booking_to,
+      status: status || "pending",
+      prescription_access_status: "accepted",
+      prescription_access_responded_at: new Date(),
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      throw new AppError("This time slot is already booked", 409);
+    }
+    throw err;
+  }
+
   return {
     booking_id: booking._id,
     prescription_access_status: "accepted",
@@ -617,7 +627,7 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
   const bookings = await Booking.find({
     ...matchField,
     booking_date,
-    status: "confirmed",
+    status: { $in: ACTIVE_BOOKING_STATUSES },
   }).lean();
 
   const availableSlots = allSlots.filter(
@@ -740,6 +750,33 @@ exports.updateBookingStatus = catchAsync(async (req, res, next) => {
     return next(
       new AppError("Access denied or unauthorized status transition", 403),
     );
+  }
+
+  if (
+    status === "confirmed" &&
+    !ACTIVE_BOOKING_STATUSES.includes(booking.status)
+  ) {
+    return next(new AppError("Cannot confirm this booking status", 400));
+  }
+
+  if (status === "confirmed") {
+    const matchField = booking.doctor_id
+      ? { doctor_id: booking.doctor_id }
+      : { staff_id: booking.staff_id };
+    const overlap = await Booking.findOne({
+      _id: { $ne: booking._id },
+      ...matchField,
+      booking_date: booking.booking_date,
+      status: { $in: ACTIVE_BOOKING_STATUSES },
+      $and: [
+        { booking_from: { $lt: booking.booking_to } },
+        { booking_to: { $gt: booking.booking_from } },
+      ],
+    }).lean();
+
+    if (overlap) {
+      return next(new AppError("This time slot is already booked", 409));
+    }
   }
 
   booking.status = status;
