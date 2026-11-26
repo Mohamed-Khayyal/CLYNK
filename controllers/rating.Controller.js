@@ -32,16 +32,18 @@ const parseRatingBody = (body) => {
   return { rating, comment };
 };
 
+const RATEABLE_BOOKING_STATUSES = ["pending", "confirmed", "completed"];
+
 const hasConfirmedDoctorBooking = async (patientUserId, doctorId) =>
-  Booking.exists({ patient_user_id: patientUserId, doctor_id: doctorId, status: { $in: ["confirmed", "completed"] } });
+  Booking.exists({ patient_user_id: patientUserId, doctor_id: doctorId, status: { $in: RATEABLE_BOOKING_STATUSES } });
 
 const hasConfirmedClinicBooking = async (patientUserId, clinicId) => {
   const staffIds = await Staff.find({ clinic_id: clinicId }).distinct("_id");
-  return Booking.exists({ patient_user_id: patientUserId, staff_id: { $in: staffIds }, status: { $in: ["confirmed", "completed"] } });
+  return Booking.exists({ patient_user_id: patientUserId, staff_id: { $in: staffIds }, status: { $in: RATEABLE_BOOKING_STATUSES } });
 };
 
 const hasConfirmedStaffBooking = async (patientUserId, staffId) =>
-  Booking.exists({ patient_user_id: patientUserId, staff_id: staffId, status: { $in: ["confirmed", "completed"] } });
+  Booking.exists({ patient_user_id: patientUserId, staff_id: staffId, status: { $in: RATEABLE_BOOKING_STATUSES } });
 
 const upsertRating = async ({ patient_user_id, doctor_id = null, clinic_id = null, staff_id = null, rating, comment }) => {
   const query = { patient_user_id };
@@ -69,109 +71,105 @@ const getSummary = async (matchField) => {
   };
 };
 
-exports.rateDoctor = catchAsync(async (req, res, next) => {
-  const doctorId = parseId(req.params.doctorId);
-  if (!doctorId) return next(new AppError("Invalid doctor id", 400));
+const rateProvider = async ({ req, res, next, targetId, forceType = null }) => {
+  const id = parseId(targetId);
+  if (!id) return next(new AppError(forceType === "staff" ? "Invalid staff id" : "Invalid doctor id", 400));
 
-  const doctor = await Doctor.findOne({ _id: doctorId, is_verified: true }).lean();
-  if (!doctor) return next(new AppError("Doctor not found", 404));
+  let isStaff = forceType === "staff";
+  let provider = null;
+
+  if (forceType !== "staff") {
+    provider = await Doctor.findOne({ _id: id, is_verified: true }).lean();
+  }
+  if (!provider && forceType !== "doctor") {
+    const staff = await Staff.findOne({ _id: id, is_verified: true }).lean();
+    if (staff) {
+      provider = staff;
+      isStaff = true;
+    }
+  }
+
+  if (!provider) {
+    return next(new AppError(forceType === "staff" ? "Staff member not found" : "Doctor not found", 404));
+  }
 
   const { rating, comment } = parseRatingBody(req.body);
   const patient = await Patient.findOne({ user_id: req.user.user_id }).lean();
-  if (!patient) return next(new AppError("Patient profile not found", 404));
+  if (!patient && !isStaff) return next(new AppError("Patient profile not found", 404));
 
-  const booked = await hasConfirmedDoctorBooking(req.user.user_id, doctorId);
-  if (!booked) return next(new AppError("You can rate only doctors you previously booked with", 403));
+  const booked = isStaff
+    ? await hasConfirmedStaffBooking(req.user.user_id, id)
+    : await hasConfirmedDoctorBooking(req.user.user_id, id);
 
-  const result = await upsertRating({ patient_user_id: req.user.user_id, doctor_id: doctorId, rating, comment });
+  if (!booked) {
+    const isArabic = String(req.headers["accept-language"] || "").toLowerCase().includes("ar");
+    return next(
+      new AppError(
+        isArabic
+          ? "يمكنك تقييم الطبيب الذي حجزت معه مسبقاً فقط"
+          : "You can rate only doctors you previously booked with",
+        403
+      )
+    );
+  }
 
-  // Notify the doctor only when a new rating is created (not an update)
+  const result = await upsertRating({
+    patient_user_id: req.user.user_id,
+    ...(isStaff ? { staff_id: id } : { doctor_id: id }),
+    rating,
+    comment,
+  });
+
   if (result.action === "created") {
+    const raterName = patient?.full_name || "أحد المرضى";
     createNotification({
-      user_id: doctor.user_id,
+      user_id: provider.user_id,
       title: "تقييم جديد",
-      message: `قام ${patient.full_name} بتقييمك بـ ${rating} نجوم وكتب: "${comment.slice(0, 80)}${comment.length > 80 ? '...' : ''}".`,
+      message: `قام ${raterName} بتقييمك بـ ${rating} نجوم وكتب: "${comment.slice(0, 80)}${comment.length > 80 ? '...' : ''}".`,
     }).catch(() => {});
   }
 
+  const label = "الطبيب";
+  const idField = isStaff ? { staff_id: id } : { doctor_id: id };
+
   res.status(result.action === "created" ? 201 : 200).json({
     status: "success",
-    message: result.action === "created" ? "تم إنشاء تقييم الطبيب" : "تم تحديث تقييم الطبيب",
-    rating: { rating_id: result.rating_id, doctor_id: doctorId, rating, comment },
+    message: result.action === "created" ? `تم إنشاء تقييم ${label}` : `تم تحديث تقييم ${label}`,
+    rating: { rating_id: result.rating_id, ...idField, rating, comment },
   });
-});
+};
 
-exports.rateClinic = catchAsync(async (req, res, next) => {
-  const clinicId = parseId(req.params.clinicId);
-  if (!clinicId) return next(new AppError("Invalid clinic id", 400));
+const getProviderRatings = async ({ req, res, next, targetId, forceType = null }) => {
+  const id = parseId(targetId);
+  if (!id) return next(new AppError(forceType === "staff" ? "Invalid staff id" : "Invalid doctor id", 400));
 
-  const clinic = await Clinic.findOne({ _id: clinicId, status: "approved" }).lean();
-  if (!clinic) return next(new AppError("Clinic not found", 404));
+  let isStaff = forceType === "staff";
+  let provider = null;
 
-  const { rating, comment } = parseRatingBody(req.body);
-
-  const booked = await hasConfirmedClinicBooking(req.user.user_id, clinicId);
-  if (!booked) return next(new AppError("You can rate only clinics you previously booked with", 403));
-
-  const result = await upsertRating({ patient_user_id: req.user.user_id, clinic_id: clinicId, rating, comment });
-
-  // Notify the clinic owner on new rating
-  if (result.action === "created") {
-    createNotification({
-      user_id: clinic.owner_user_id,
-      title: "تقييم جديد للعيادة",
-      message: `حصلت عيادتك على تقييم جديد بـ ${rating} نجوم من أحد المرضى.`,
-    }).catch(() => {});
+  if (forceType !== "staff") {
+    provider = await Doctor.findOne({ _id: id, is_verified: true }).lean();
+  }
+  if (!provider && forceType !== "doctor") {
+    const staff = await Staff.findOne({ _id: id, is_verified: true }).lean();
+    if (staff) {
+      provider = staff;
+      isStaff = true;
+    }
   }
 
-  res.status(result.action === "created" ? 201 : 200).json({
-    status: "success",
-    message: result.action === "created" ? "تم إنشاء تقييم العيادة" : "تم تحديث تقييم العيادة",
-    rating: { rating_id: result.rating_id, clinic_id: clinicId, rating, comment },
-  });
-});
-
-exports.rateStaff = catchAsync(async (req, res, next) => {
-  const staffId = parseId(req.params.staffId);
-  if (!staffId) return next(new AppError("Invalid staff id", 400));
-
-  const staff = await Staff.findOne({ _id: staffId, is_verified: true }).lean();
-  if (!staff) return next(new AppError("Staff member not found", 404));
-
-  const { rating, comment } = parseRatingBody(req.body);
-
-  const booked = await hasConfirmedStaffBooking(req.user.user_id, staffId);
-  if (!booked) return next(new AppError("You can rate only staff you previously booked with", 403));
-
-  const result = await upsertRating({ patient_user_id: req.user.user_id, staff_id: staffId, rating, comment });
-
-  // Notify the staff member on new rating
-  if (result.action === "created") {
-    createNotification({
-      user_id: staff.user_id,
-      title: "تقييم جديد",
-      message: `قام أحد المرضى بتقييمك بـ ${rating} نجوم وكتب: "${comment.slice(0, 80)}${comment.length > 80 ? '...' : ''}".`,
-    }).catch(() => {});
+  if (!provider) {
+    return next(new AppError(forceType === "staff" ? "Staff member not found" : "Doctor not found", 404));
   }
-
-  res.status(result.action === "created" ? 201 : 200).json({
-    status: "success",
-    message: result.action === "created" ? "تم إنشاء تقييم الموظف" : "تم تحديث تقييم الموظف",
-    rating: { rating_id: result.rating_id, staff_id: staffId, rating, comment },
-  });
-});
-
-exports.getDoctorRatings = catchAsync(async (req, res, next) => {
-  const doctorId = parseId(req.params.doctorId);
-  if (!doctorId) return next(new AppError("Invalid doctor id", 400));
-
-  const doctor = await Doctor.findOne({ _id: doctorId, is_verified: true }).lean();
-  if (!doctor) return next(new AppError("Doctor not found", 404));
 
   const { page, limit, skip } = parsePagination(req.query);
-  const summary = await getSummary({ doctor_id: new mongoose.Types.ObjectId(doctorId) });
+  const matchField = isStaff
+    ? { staff_id: new mongoose.Types.ObjectId(id) }
+    : { doctor_id: new mongoose.Types.ObjectId(id) };
+  const findField = isStaff ? { staff_id: id } : { doctor_id: id };
 
-  const ratings = await Rating.find({ doctor_id: doctorId })
+  const summary = await getSummary(matchField);
+
+  const ratings = await Rating.find(findField)
     .populate("patient_user_id", "photo")
     .sort({ updated_at: -1, created_at: -1 })
     .skip(skip)
@@ -197,7 +195,49 @@ exports.getDoctorRatings = catchAsync(async (req, res, next) => {
     results: result.length,
     ratings: result,
   });
+};
+
+exports.rateDoctor = catchAsync(async (req, res, next) =>
+  rateProvider({ req, res, next, targetId: req.params.doctorId })
+);
+
+exports.rateClinic = catchAsync(async (req, res, next) => {
+  const clinicId = parseId(req.params.clinicId);
+  if (!clinicId) return next(new AppError("Invalid clinic id", 400));
+
+  const clinic = await Clinic.findOne({ _id: clinicId, status: "approved" }).lean();
+  if (!clinic) return next(new AppError("Clinic not found", 404));
+
+  const { rating, comment } = parseRatingBody(req.body);
+
+  const booked = await hasConfirmedClinicBooking(req.user.user_id, clinicId);
+  if (!booked) return next(new AppError("يمكنك تقييم العيادة التي حجزت معها مسبقاً فقط", 403));
+
+  const result = await upsertRating({ patient_user_id: req.user.user_id, clinic_id: clinicId, rating, comment });
+
+  // Notify the clinic owner on new rating
+  if (result.action === "created") {
+    createNotification({
+      user_id: clinic.owner_user_id,
+      title: "تقييم جديد للعيادة",
+      message: `حصلت عيادتك على تقييم جديد بـ ${rating} نجوم من أحد المرضى.`,
+    }).catch(() => {});
+  }
+
+  res.status(result.action === "created" ? 201 : 200).json({
+    status: "success",
+    message: result.action === "created" ? "تم إنشاء تقييم العيادة" : "تم تحديث تقييم العيادة",
+    rating: { rating_id: result.rating_id, clinic_id: clinicId, rating, comment },
+  });
 });
+
+exports.rateStaff = catchAsync(async (req, res, next) =>
+  rateProvider({ req, res, next, targetId: req.params.staffId, forceType: "staff" })
+);
+
+exports.getDoctorRatings = catchAsync(async (req, res, next) =>
+  getProviderRatings({ req, res, next, targetId: req.params.doctorId })
+);
 
 exports.getClinicRatings = catchAsync(async (req, res, next) => {
   const clinicId = parseId(req.params.clinicId);
@@ -237,40 +277,6 @@ exports.getClinicRatings = catchAsync(async (req, res, next) => {
   });
 });
 
-exports.getStaffRatings = catchAsync(async (req, res, next) => {
-  const staffId = parseId(req.params.staffId);
-  if (!staffId) return next(new AppError("Invalid staff id", 400));
-
-  const staff = await Staff.findOne({ _id: staffId, is_verified: true }).lean();
-  if (!staff) return next(new AppError("Staff member not found", 404));
-
-  const { page, limit, skip } = parsePagination(req.query);
-  const summary = await getSummary({ staff_id: new mongoose.Types.ObjectId(staffId) });
-
-  const ratings = await Rating.find({ staff_id: staffId })
-    .populate("patient_user_id", "photo")
-    .sort({ updated_at: -1, created_at: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-
-  const patientIds = ratings.map((r) => r.patient_user_id?._id || r.patient_user_id);
-  const patients = await Patient.find({ user_id: { $in: patientIds } }).lean();
-  const patientMap = Object.fromEntries(patients.map((p) => [String(p.user_id), p]));
-
-  const result = ratings.map((r) => ({
-    rating_id: r._id,
-    rating: r.rating,
-    comment: r.comment,
-    patient_name: patientMap[String(r.patient_user_id?._id || r.patient_user_id)]?.full_name || null,
-    patient_photo: r.patient_user_id?.photo || null,
-  }));
-
-  res.status(200).json({
-    status: "success",
-    summary,
-    pagination: { page, limit, total_pages: Math.max(1, Math.ceil(summary.total_ratings / limit)) },
-    results: result.length,
-    ratings: result,
-  });
-});
+exports.getStaffRatings = catchAsync(async (req, res, next) =>
+  getProviderRatings({ req, res, next, targetId: req.params.staffId, forceType: "staff" })
+);

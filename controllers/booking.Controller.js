@@ -10,6 +10,18 @@ const parseId = (value) => {
   return value;
 };
 
+const formatTime12HourAr = (timeStr) => {
+  if (!timeStr) return "";
+  const match = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return timeStr;
+  const hours24 = parseInt(match[1], 10);
+  const minutes = match[2];
+  if (Number.isNaN(hours24) || hours24 < 0 || hours24 > 23) return timeStr;
+  const period = hours24 >= 12 ? "م" : "ص";
+  const hours12 = hours24 % 12 === 0 ? 12 : hours24 % 12;
+  return `${hours12}:${minutes} ${period}`;
+};
+
 const User = require("../models/User.model");
 const Doctor = require("../models/Doctor.model");
 const Staff = require("../models/Staff.model");
@@ -389,9 +401,21 @@ const getProviderTargetForUser = async ({ user, staff_id }) => {
 
 exports.createBooking = catchAsync(async (req, res) => {
   const { booking_date, booking_from } = req.body;
-  const doctor_id = req.body.doctor_id || null;
-  const staff_id = req.body.staff_id || null;
+  let doctor_id = req.body.doctor_id || null;
+  let staff_id = req.body.staff_id || null;
   const patient_user_id = req.user.user_id;
+
+  // Support staff IDs passed as doctor_id (e.g. from unified /doctors/[id] page)
+  if (doctor_id && !staff_id) {
+    const isDoctor = await Doctor.exists({ _id: doctor_id });
+    if (!isDoctor) {
+      const isStaff = await Staff.exists({ _id: doctor_id });
+      if (isStaff) {
+        staff_id = doctor_id;
+        doctor_id = null;
+      }
+    }
+  }
 
   const booking = await createBookingRecord({
     patient_user_id,
@@ -402,17 +426,20 @@ exports.createBooking = catchAsync(async (req, res) => {
     status: "pending",
   });
 
+  const from12 = formatTime12HourAr(booking_from);
+  const to12 = formatTime12HourAr(booking.booking_to);
+
   await createNotification({
     user_id: booking.target.user_id,
     title: "حجز جديد",
-    message: `تم جدولة حجز جديد بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
+    message: `تم جدولة حجز جديد بتاريخ ${booking_date} من ${from12} حتى ${to12}.`,
   });
 
   // Notify the patient too
   await createNotification({
     user_id: patient_user_id,
     title: "تم تأكيد حجزك",
-    message: `تم تأكيد حجزك مع ${booking.target.full_name} بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
+    message: `تم تأكيد حجزك مع ${booking.target.full_name} بتاريخ ${booking_date} من ${from12} حتى ${to12}.`,
   });
 
   res
@@ -452,7 +479,7 @@ exports.createProviderBooking = catchAsync(async (req, res) => {
   await createNotification({
     user_id: patient.patient_user_id,
     title: "تم إنشاء حجز لك",
-    message: `قام ${booking.target.full_name} بجدولة حجز لك بتاريخ ${booking_date} من ${booking_from} حتى ${booking.booking_to}.`,
+    message: `قام ${booking.target.full_name} بجدولة حجز لك بتاريخ ${booking_date} من ${formatTime12HourAr(booking_from)} حتى ${formatTime12HourAr(booking.booking_to)}.`,
   });
 
   res.status(201).json({
@@ -592,11 +619,26 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
   if (!booking_date) return next(new AppError("booking_date is required", 400));
 
   let target;
+  let resolvedStaffId = staff_id;
   if (doctor_id) {
     target = await Doctor.findById(doctor_id)
       .select("work_days work_from work_to is_verified")
       .lean();
-    if (!target || !target.is_verified)
+    if (!target) {
+      // Fallback: check if the ID belongs to a verified clinic staff member
+      const staffTarget = await Staff.findById(doctor_id)
+        .select("work_days work_from work_to is_verified")
+        .lean();
+      if (staffTarget) {
+        target = staffTarget;
+        resolvedStaffId = doctor_id;
+      }
+    }
+    if (
+      !target ||
+      !target.is_verified ||
+      (resolvedStaffId && (!target.work_days || !target.work_from || !target.work_to))
+    )
       return next(new AppError("Doctor is not available", 404));
   } else {
     target = await Staff.findById(staff_id)
@@ -623,7 +665,7 @@ exports.getAvailableSlots = catchAsync(async (req, res, next) => {
 
   const allSlots = generateSlots(target.work_from, target.work_to, 30);
 
-  const matchField = doctor_id ? { doctor_id } : { staff_id };
+  const matchField = resolvedStaffId ? { staff_id: resolvedStaffId } : { doctor_id };
   const bookings = await Booking.find({
     ...matchField,
     booking_date,

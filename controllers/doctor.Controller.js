@@ -33,14 +33,23 @@ exports.getDoctors = catchAsync(async (req, res) => {
   const filter = { is_verified: true };
   if (specialist) filter.specialist = specialist;
 
-  const doctors = await Doctor.find(filter)
-    .populate("user_id", "photo is_active")
-    .sort({ years_of_experience: -1, full_name: 1 })
-    .lean();
+  // Fetch both independent doctors and clinic staff (doctors) in parallel
+  const [doctors, staffList] = await Promise.all([
+    Doctor.find(filter)
+      .populate("user_id", "photo is_active")
+      .sort({ years_of_experience: -1, full_name: 1 })
+      .lean(),
+    Staff.find(filter)
+      .populate("user_id", "photo is_active")
+      .populate("clinic_id", "name location")
+      .sort({ _id: -1 })
+      .lean(),
+  ]);
 
-  const active = doctors.filter((d) => d.user_id?.is_active);
+  const activeDoctors = doctors.filter((d) => d.user_id?.is_active);
+  const activeStaff = staffList.filter((s) => s.user_id?.is_active);
 
-  const result = await Promise.all(active.map(async (d) => {
+  const doctorResults = await Promise.all(activeDoctors.map(async (d) => {
     const bookingAgg = await Booking.aggregate([
       { $match: { doctor_id: d._id, status: "confirmed" } },
       { $group: { _id: null, total: { $sum: 1 }, patients: { $addToSet: "$patient_user_id" } } },
@@ -50,7 +59,9 @@ exports.getDoctors = catchAsync(async (req, res) => {
     const ratings = await getRatings({ doctor_id: d._id });
 
     return {
+      id: String(d._id),
       doctor_id: d._id,
+      type: "doctor",
       full_name: d.full_name,
       gender: d.gender,
       years_of_experience: d.years_of_experience,
@@ -70,7 +81,42 @@ exports.getDoctors = catchAsync(async (req, res) => {
     };
   }));
 
-  res.status(200).json({ status: "success", results: result.length, doctors: result });
+  const staffResults = await Promise.all(activeStaff.map(async (s) => {
+    const bookingAgg = await Booking.aggregate([
+      { $match: { staff_id: s._id, status: "confirmed" } },
+      { $group: { _id: null, total: { $sum: 1 }, patients: { $addToSet: "$patient_user_id" } } },
+    ]);
+    const total_bookings = bookingAgg[0]?.total || 0;
+    const total_patients = bookingAgg[0]?.patients?.length || 0;
+    const ratings = await getRatings({ staff_id: s._id });
+
+    return {
+      id: String(s._id),
+      staff_id: s._id,
+      type: "staff",
+      full_name: s.full_name,
+      gender: s.gender,
+      years_of_experience: s.years_of_experience || 0,
+      bio: s.bio,
+      consultation_price: s.consultation_price,
+      work_from: s.work_from,
+      work_to: s.work_to,
+      work_days: s.work_days,
+      location: s.location || s.clinic_id?.location,
+      geo_location: formatGeo(s.geo_location),
+      specialist: s.specialist,
+      photo: s.user_id?.photo,
+      clinic_name: s.clinic_id?.name,
+      total_bookings,
+      total_patients,
+      ...ratings,
+      can_be_booked: true,
+    };
+  }));
+
+  const allResults = [...doctorResults, ...staffResults];
+
+  res.status(200).json({ status: "success", results: allResults.length, doctors: allResults });
 });
 
 exports.getDoctorProfile = catchAsync(async (req, res, next) => {
@@ -109,7 +155,10 @@ exports.getDoctorProfile = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: "success",
     doctor: {
-      doctor_id: doctor._id,
+      id: String(doctor._id),
+      doctor_id: isStaff ? undefined : doctor._id,
+      staff_id: isStaff ? doctor._id : undefined,
+      type: isStaff ? "staff" : "doctor",
       user_id: doctor.user_id?._id,
       email: doctor.user_id?.email,
       full_name: doctor.full_name,
